@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: #0a0a0a;
+  color: #e5e7eb;
+}
+
+body {
+  font-feature-settings: "rlig" 1, "calt" 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+.muscle-zone {
+  transition: fill 200ms ease, opacity 200ms ease;
+  cursor: pointer;
+}
+
+.muscle-zone:hover {
+  opacity: 0.85;
+  stroke: #ffffff;
+  stroke-width: 1.2;
+}

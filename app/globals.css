@@ -2,27 +2,623 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+:root,
+:root.dark-fantasy {
   color-scheme: dark;
+
+  /* Reusable noise texture (aged parchment / stone grain) */
+  --noise-bg: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+
+  /* Theme tokens — RGB triples, consumed via rgb(var(--x) / <alpha>) */
+  --color-bg: 8 8 16;             /* #080810 */
+  --color-panel: 12 12 24;         /* #0c0c18 */
+  --color-elevated: 20 20 30;      /* #14141e */
+  --color-border: 42 38 48;        /* #2a2630 */
+  --color-border-bright: 58 51 64; /* #3a3340 */
+  --color-ink: 216 210 194;        /* #d8d2c2 */
+  --color-ink-strong: 236 229 212; /* #ece5d4 */
+  --color-ink-muted: 90 82 70;     /* #5a5246 */
+  --color-muted: 139 130 117;      /* #8b8275 */
+  --color-accent: 109 40 217;      /* #6d28d9 */
+  --color-accent-soft: 124 58 237; /* #7c3aed */
+  --color-gold: 184 134 11;        /* #b8860b */
+  --color-gold-soft: 212 160 32;   /* #d4a020 */
+  --color-bronze: 139 115 85;      /* #8b7355 */
+  --color-bronze-deep: 107 79 58;  /* #6b4f3a */
+
+  /* Hex aliases used by inline style strings (legacy). */
+  --bronze: #8b7355;
+  --bronze-deep: #6b4f3a;
+  --gold-aged: #b8860b;
+
+  /* Page-level paint */
+  --page-bg-color: #080810;
+  --page-vignette:
+    radial-gradient(ellipse 80% 70% at 50% 0%, rgba(40, 30, 50, 0.45), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 50% 100%, rgba(30, 20, 15, 0.4), transparent 65%);
+
+  /* Selection */
+  --selection-bg: rgba(184, 134, 11, 0.30);
+  --selection-fg: #ece5d4;
+
+  /* Form-control surface */
+  --form-bg: #14141e;
+  --form-border: #6b4f3a;
+  --form-text: #d8d2c2;
+  --form-placeholder: #5a5246;
+
+  /* Chart palette (recharts consumers read these via getComputedStyle) */
+  --chart-grid: #1e1e3a;
+  --chart-axis: #5a5246;
+  --chart-tooltip-bg: #0c0c18;
+  --chart-tooltip-border: #2a2a4a;
+  --chart-tooltip-text: #d8d2c2;
+  --chart-bar-met: #5b3993;
+  --chart-bar-under: #3a5a8a;
+  --chart-bar-over: #a0432a;
+  --chart-line: #8b5cf6;
+  --chart-area-stroke: #a878d0;
+  --chart-area-fill-from: rgba(139, 92, 246, 0.40);
+  --chart-area-fill-to: rgba(139, 92, 246, 0);
+  --chart-goal-line: #b8860b;
+  --chart-protein: #4a72a8;
+  --chart-carbs: #4d7e4a;
+  --chart-fat: #b8860b;
+  --chart-cursor: rgba(184, 134, 11, 0.06);
+
+  /* Body heatmap surface (light tint behind the figure) */
+  --body-bg: rgba(20, 14, 30, 0);
+  --body-untrained: #2a2a3a;
+
+  /* Banner fabric per tier (Training Ground hanging banners) */
+  --banner-fabric-untrained: #1a1a1a;
+  --banner-fabric-below: #0d1b2a;
+  --banner-fabric-average: #0d1f0d;
+  --banner-fabric-above: #1f1500;
+  --banner-fabric-exceptional: #1f0800;
+  --banner-fabric-elite: #150020;
+  --banner-sigil-untrained: #5a5246;
+  --banner-sigil-below: #3a5a8a;
+  --banner-sigil-average: #3d6b3a;
+  --banner-sigil-above: #b8860b;
+  --banner-sigil-exceptional: #a0432a;
+  --banner-sigil-elite: #a878d0;
 }
 
-html, body {
-  background: #0a0a0a;
-  color: #e5e7eb;
+/* ── Light Fantasy — warm parchment / Studio-Ghibli-ish ───────── */
+:root.light-fantasy {
+  color-scheme: light;
+
+  --color-bg: 245 240 232;         /* #f5f0e8 — warm parchment */
+  --color-panel: 255 253 247;       /* #fffdf7 — cream cards */
+  --color-elevated: 254 249 240;    /* #fef9f0 */
+  --color-border: 212 184 150;      /* #d4b896 — aged tan */
+  --color-border-bright: 184 148 110;/* #b8946e — hover deeper tan */
+  --color-ink: 28 20 16;            /* #1c1410 — warm dark brown */
+  --color-ink-strong: 12 8 6;       /* #0c0806 */
+  --color-ink-muted: 160 128 96;    /* #a08060 — sandy brown */
+  --color-muted: 107 90 71;         /* #6b5a47 — earth brown */
+  --color-accent: 124 58 237;       /* #7c3aed enchanted purple */
+  --color-accent-soft: 167 139 250; /* #a78bfa */
+  --color-gold: 217 119 6;          /* #d97706 — warm amber */
+  --color-gold-soft: 245 158 11;    /* #f59e0b */
+  --color-bronze: 168 132 88;       /* #a88458 */
+  --color-bronze-deep: 122 89 56;   /* #7a5938 */
+
+  --bronze: #a88458;
+  --bronze-deep: #7a5938;
+  --gold-aged: #d97706;
+
+  --page-bg-color: #f5f0e8;
+  --page-vignette:
+    radial-gradient(ellipse 80% 70% at 50% 0%, rgba(217, 119, 6, 0.10), transparent 60%),
+    radial-gradient(ellipse 60% 50% at 50% 100%, rgba(124, 58, 237, 0.07), transparent 65%);
+
+  --selection-bg: rgba(217, 119, 6, 0.30);
+  --selection-fg: #1c1410;
+
+  --form-bg: #fffdf7;
+  --form-border: #b89a74;
+  --form-text: #1c1410;
+  --form-placeholder: #a89882;
+
+  /* Chart palette — warm light variants */
+  --chart-grid: #e8dfd0;
+  --chart-axis: #6b5a47;
+  --chart-tooltip-bg: #fffdf7;
+  --chart-tooltip-border: #d4b896;
+  --chart-tooltip-text: #1c1410;
+  --chart-bar-met: #7c3aed;
+  --chart-bar-under: #059669;
+  --chart-bar-over: #d97706;
+  --chart-line: #7c3aed;
+  --chart-area-stroke: #7c3aed;
+  --chart-area-fill-from: rgba(124, 58, 237, 0.18);
+  --chart-area-fill-to: rgba(124, 58, 237, 0);
+  --chart-goal-line: #d97706;
+  --chart-protein: #2563eb;
+  --chart-carbs: #059669;
+  --chart-fat: #d97706;
+  --chart-cursor: rgba(217, 119, 6, 0.10);
+
+  /* Body heatmap surface — warm cream */
+  --body-bg: rgba(245, 235, 215, 0.7);
+  --body-untrained: #c8bfb0;
+
+  /* Banner fabric — earthy village-market palette */
+  --banner-fabric-untrained: #e8dfd0;     /* aged linen */
+  --banner-fabric-below: #b9c9d8;         /* dusty blue */
+  --banner-fabric-average: #b3c7a3;       /* moss green */
+  --banner-fabric-above: #e0c79c;         /* warm wheat */
+  --banner-fabric-exceptional: #c87c5a;   /* terracotta */
+  --banner-fabric-elite: #9b7ec9;         /* enchanted violet */
+  --banner-sigil-untrained: #8a7f6b;
+  --banner-sigil-below: #2c4870;
+  --banner-sigil-average: #2a4628;
+  --banner-sigil-above: #8a6308;
+  --banner-sigil-exceptional: #6e2810;
+  --banner-sigil-elite: #4a3084;
+}
+
+html {
+  /* Smooth transition between themes. */
+  transition: background-color 300ms ease, color 300ms ease;
+}
+
+html,
+body {
+  background: var(--page-bg-color);
+  color: rgb(var(--color-ink));
 }
 
 body {
-  font-feature-settings: "rlig" 1, "calt" 1;
+  font-feature-settings: "rlig" 1, "calt" 1, "ss01" 1, "cv11" 1;
+  font-variant-numeric: tabular-nums lining-nums;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  background-image: var(--noise-bg), var(--page-vignette);
+  background-attachment: fixed;
+  transition: background-color 300ms ease, color 300ms ease;
 }
 
-.muscle-zone {
-  transition: fill 200ms ease, opacity 200ms ease;
+::selection {
+  background: var(--selection-bg);
+  color: var(--selection-fg);
+}
+
+/* ── Form controls — theme-aware via CSS vars ─────────────────── */
+input[type="text"],
+input[type="number"],
+input[type="date"],
+input[type="email"],
+input[type="password"],
+select,
+textarea {
+  background: var(--form-bg) !important;
+  border: 1px solid var(--form-border);
+  border-radius: 6px;
+  color: var(--form-text) !important;
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 11px 14px;
+  min-height: 44px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+  appearance: none;
+  -webkit-appearance: none;
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.35);
+}
+:root.light-fantasy input,
+:root.light-fantasy select,
+:root.light-fantasy textarea {
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--form-placeholder);
+}
+input:hover,
+select:hover,
+textarea:hover {
+  border-color: var(--bronze);
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--gold-aged);
+  box-shadow: inset 0 1px 0 rgba(0, 0, 0, 0.4),
+    0 0 0 1px rgba(184, 134, 11, 0.35);
+}
+select option {
+  background: #14141e !important;
+  color: #d8d2c2 !important;
+}
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.8) sepia(0.4);
+  opacity: 0.7;
   cursor: pointer;
 }
-
-.muscle-zone:hover {
-  opacity: 0.85;
-  stroke: #ffffff;
-  stroke-width: 1.2;
+select {
+  background-image: none;
 }
+
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* ── Body figure visual layer is non-interactive ─────────────── */
+.body-visual,
+.body-visual * {
+  pointer-events: none !important;
+}
+
+/* ── Hover lift — subtle, stony ─────────────────────────────── */
+@media (prefers-reduced-motion: no-preference) {
+  .lift {
+    transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
+      box-shadow 200ms ease, border-color 200ms ease;
+  }
+  .lift:hover {
+    transform: translateY(-1px);
+    border-color: var(--bronze);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.05),
+      inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+      0 8px 24px rgba(0, 0, 0, 0.55);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pop:hover {
+    transform: scale(1.02);
+    transition: transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+}
+
+/* ── Page enter fade ────────────────────────────────────────── */
+@media (prefers-reduced-motion: no-preference) {
+  main {
+    animation: pageEnter 220ms ease-out;
+  }
+  @keyframes pageEnter {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* ── Scrollbar — bronze on stone ────────────────────────────── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2630;
+  border-radius: 5px;
+  border: 2px solid #080810;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--bronze-deep);
+}
+
+/* ── Aged gold wordmark ─────────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(
+    180deg,
+    #d4a020 0%,
+    #b8860b 50%,
+    #6b4f3a 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+  font-family: var(--font-cinzel), Georgia, serif;
+  letter-spacing: 0.06em;
+}
+
+/* ── Aged-stone tablet card ─────────────────────────────────── */
+.tablet {
+  position: relative;
+  background-color: rgb(var(--color-panel));
+  background-image: var(--noise-bg);
+  border: 1px solid var(--bronze-deep);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    inset 0 0 32px rgba(0, 0, 0, 0.35),
+    0 4px 14px rgba(0, 0, 0, 0.5);
+}
+:root.light-fantasy .tablet {
+  /* Warm cottage feel: soft amber shadow, no insets */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 2px 12px rgba(180, 140, 100, 0.18),
+    0 1px 2px rgba(180, 140, 100, 0.10);
+}
+/* Diamond corner accents — applied via two small pseudo-elements
+   stacked at top-left/top-right and bottom-left/bottom-right via
+   spread shadows on the same element. */
+.tablet::before,
+.tablet::after {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--bronze);
+  transform: rotate(45deg);
+  pointer-events: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+}
+.tablet::before {
+  top: -3px;
+  left: -3px;
+}
+.tablet::after {
+  top: -3px;
+  right: -3px;
+}
+.tablet > .corner-bl,
+.tablet > .corner-br {
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  background: var(--bronze);
+  transform: rotate(45deg);
+  pointer-events: none;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.25),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+}
+.tablet > .corner-bl {
+  bottom: -3px;
+  left: -3px;
+}
+.tablet > .corner-br {
+  bottom: -3px;
+  right: -3px;
+}
+
+/* Variant: warm-purple-edged tablet for character/legendary surfaces */
+.tablet-arcane {
+  border-color: #4a3565;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.05),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.5),
+    inset 0 0 60px rgba(20, 10, 40, 0.6),
+    0 6px 18px rgba(0, 0, 0, 0.55);
+}
+:root.light-fantasy .tablet-arcane {
+  border-color: #b89a74;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 4px 18px rgba(124, 58, 237, 0.10),
+    0 2px 6px rgba(180, 140, 100, 0.12);
+}
+.tablet-arcane::before,
+.tablet-arcane::after,
+.tablet-arcane > .corner-bl,
+.tablet-arcane > .corner-br {
+  background: #5b3993;
+}
+
+/* ── Beveled stone button ───────────────────────────────────── */
+.btn-stone {
+  font-family: var(--font-cinzel), Georgia, serif;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+  color: #ece5d4;
+  background-color: #4a2a8a;
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.25)),
+    var(--noise-bg);
+  border: 1px solid #6b4f3a;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 2px 0 rgba(0, 0, 0, 0.5),
+    0 4px 12px rgba(0, 0, 0, 0.5);
+  transition: background-color 120ms ease, transform 80ms ease,
+    box-shadow 120ms ease;
+}
+.btn-stone:hover:not(:disabled) {
+  background-color: #5a35a8;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.40),
+    0 2px 0 rgba(0, 0, 0, 0.55),
+    0 6px 16px rgba(0, 0, 0, 0.55);
+}
+.btn-stone:active:not(:disabled) {
+  transform: translateY(1px);
+  box-shadow:
+    inset 0 1px 4px rgba(0, 0, 0, 0.5),
+    0 1px 0 rgba(0, 0, 0, 0.5);
+}
+.btn-stone:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  filter: saturate(0.5);
+}
+
+/* Gold variant — for important affirmative actions */
+.btn-stone-gold {
+  background-color: #8a6308;
+  color: #1a0f00;
+  border-color: #4a3010;
+}
+.btn-stone-gold:hover:not(:disabled) {
+  background-color: #a07820;
+}
+
+/* Ghost variant — for secondary actions */
+.btn-stone-ghost {
+  background-color: #14141e;
+  color: #d8d2c2;
+  border-color: var(--bronze-deep);
+}
+.btn-stone-ghost:hover:not(:disabled) {
+  background-color: #1a1a26;
+  border-color: var(--bronze);
+}
+
+/* Light fantasy — softer, no heavy bevel */
+:root.light-fantasy .btn-stone {
+  background-color: #7c3aed;
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.20), rgba(0, 0, 0, 0.06));
+  color: #fffdf7;
+  border-color: #6d28d9;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.30),
+    0 2px 6px rgba(124, 58, 237, 0.30);
+}
+:root.light-fantasy .btn-stone:hover:not(:disabled) {
+  background-color: #8b5cf6;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.35),
+    0 4px 10px rgba(124, 58, 237, 0.35);
+}
+:root.light-fantasy .btn-stone-gold {
+  background-color: #d97706;
+  color: #1c1410;
+  border-color: #b8650a;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 2px 6px rgba(217, 119, 6, 0.30);
+}
+:root.light-fantasy .btn-stone-gold:hover:not(:disabled) {
+  background-color: #f59e0b;
+}
+:root.light-fantasy .btn-stone-ghost {
+  background-color: #fffdf7;
+  color: #1c1410;
+  border-color: #d4b896;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 1px 4px rgba(180, 140, 100, 0.15);
+}
+:root.light-fantasy .btn-stone-ghost:hover:not(:disabled) {
+  background-color: #fef9f0;
+  border-color: #b8946e;
+}
+
+/* ── Wax-seal level badge ───────────────────────────────────── */
+.seal {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 1px solid rgba(0, 0, 0, 0.6);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.20),
+    inset 0 -1px 1px rgba(0, 0, 0, 0.4),
+    0 1px 0 rgba(0, 0, 0, 0.5);
+  background-image:
+    radial-gradient(circle at 35% 30%, rgba(255, 255, 255, 0.15), transparent 60%);
+}
+
+/* ── Grooved XP bar (carved track) ──────────────────────────── */
+.xp-track {
+  position: relative;
+  background: #0a0a0a;
+  border-radius: 9999px;
+  border: 1px solid #1a1a1a;
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.8),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+  overflow: hidden;
+}
+.xp-fill {
+  height: 100%;
+  border-radius: 9999px;
+  position: relative;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.30);
+}
+.xp-fill::after {
+  /* gloss highlight */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.18) 0%,
+    rgba(255, 255, 255, 0) 50%,
+    rgba(0, 0, 0, 0.15) 100%
+  );
+  border-radius: 9999px;
+  pointer-events: none;
+}
+
+/* ── RPG flourishes ─────────────────────────────────────────── */
+.epic-heading {
+  font-family: var(--font-cinzel), Georgia, serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  font-weight: 700;
+}
+
+.gold-text {
+  color: #b8860b;
+  text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+
+.rune-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(139, 115, 85, 0.45),
+    rgba(184, 134, 11, 0.55),
+    rgba(139, 115, 85, 0.45),
+    transparent
+  );
+}
+
+/* Subtle pulsing ember — for legendary tier */
+@media (prefers-reduced-motion: no-preference) {
+  .pulse-legendary {
+    animation: pulseLegendary 4s ease-in-out infinite;
+  }
+  @keyframes pulseLegendary {
+    0%, 100% {
+      box-shadow:
+        inset 0 0 0 1px rgba(91, 57, 147, 0.45),
+        inset 0 1px 0 rgba(255, 255, 255, 0.05),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+    }
+    50% {
+      box-shadow:
+        inset 0 0 0 1px rgba(91, 57, 147, 0.7),
+        inset 0 1px 0 rgba(255, 255, 255, 0.07),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.4),
+        0 0 16px rgba(91, 57, 147, 0.20);
+    }
+  }
+}
+
+/* (Legacy class) — kept so any consumers don't break, but neutralised. */
+.glow-purple { }
+.glow-gold { }
+.xp-bar-fill { }

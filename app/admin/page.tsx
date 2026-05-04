@@ -1,22 +1,29 @@
 import { redirect } from "next/navigation";
+import { unstable_noStore as noStore } from "next/cache";
 import AdminPanel from "@/components/AdminPanel";
 import {
   createSupabaseAdminClient,
   createSupabaseServerClient,
 } from "@/lib/supabase-server";
+import { loadProfile } from "@/lib/profile";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 export default async function AdminPage() {
+  noStore();
+
   const supabase = createSupabaseServerClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
   if (!user) redirect("/");
 
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("role")
-    .eq("id", user.id)
-    .single();
-
-  if (profile?.role !== "admin") redirect("/dashboard");
+  const profile = await loadProfile(
+    user.id,
+    user.email?.split("@")[0] ?? "Admin"
+  );
+  if (profile.role !== "admin") redirect("/dashboard");
 
   const admin = createSupabaseAdminClient();
   const { data: profiles } = await admin
@@ -37,5 +44,18 @@ export default async function AdminPage() {
     email: emailById.get(p.id) ?? null,
   }));
 
-  return <AdminPanel users={users} currentUserId={user.id} />;
+  return (
+    <AdminPanel
+      users={users}
+      currentUserId={user.id}
+      username={profile.username}
+      profile={{
+        bodyweight: profile.bodyweight,
+        height: profile.height,
+        sex: profile.sex,
+        ageGroup: profile.ageGroup,
+        experience: profile.experience,
+      }}
+    />
+  );
 }

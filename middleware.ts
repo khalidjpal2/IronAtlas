@@ -35,7 +35,10 @@ export async function middleware(request: NextRequest) {
     return r;
   }
 
-  const isProtected = path.startsWith("/dashboard") || path.startsWith("/admin");
+  const isProtected =
+    path.startsWith("/dashboard") ||
+    path.startsWith("/admin") ||
+    path.startsWith("/achievements");
   if (isProtected && !user) return redirectTo("/");
   if (path === "/" && user) return redirectTo("/dashboard");
 

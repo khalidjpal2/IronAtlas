@@ -13,7 +13,9 @@
     "@supabase/supabase-js": "^2.45.4",
     "next": "14.2.35",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-body-highlighter": "^2.0.5",
+    "react-dom": "^18.3.1",
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@types/node": "^20.16.10",

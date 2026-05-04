@@ -1,6 +1,14 @@
 "use client";
 
-import { LEVEL_COLOR, type StrengthLevel, type MuscleGroup } from "@/lib/strength";
+import { useState } from "react";
+import Model, { type IExerciseData, type Muscle } from "react-body-highlighter";
+import {
+  LEVEL_COLOR,
+  ZONE_LABEL,
+  type MuscleGroup,
+  type StrengthLevel,
+  type Zone,
+} from "@/lib/strength";
 
 type Props = {
   view: "front" | "back";
@@ -8,210 +16,247 @@ type Props = {
   onMuscleClick?: (muscle: MuscleGroup) => void;
 };
 
-const baseFill = "#1f1f23";
-const baseStroke = "#2e2e35";
+// =====================================================================
+// Visual layer — heatmap colors driven by react-body-highlighter
+// =====================================================================
+const ZONE_TO_MUSCLES: Record<Zone, Muscle[]> = {
+  chest: ["chest"],
+  back: ["trapezius", "upper-back", "lower-back"],
+  shoulders: ["front-deltoids", "back-deltoids"],
+  biceps: ["biceps"],
+  triceps: ["triceps"],
+  forearms: ["forearm"],
+  abs: ["abs", "obliques"],
+  quads: ["quadriceps"],
+  hamstrings: ["hamstring"],
+  glutes: ["gluteal"],
+  calves: ["calves"],
+};
 
-function fillFor(muscle: MuscleGroup, levels: Props["levels"]) {
-  const lvl = levels[muscle] ?? "untrained";
-  return LEVEL_COLOR[lvl];
+const HIGHLIGHTED_COLORS = [
+  LEVEL_COLOR.below,
+  LEVEL_COLOR.average,
+  LEVEL_COLOR.above,
+  LEVEL_COLOR.exceptional,
+  LEVEL_COLOR.elite,
+];
+
+const LEVEL_TO_FREQ: Record<StrengthLevel, number> = {
+  untrained: 0,
+  below: 1,
+  average: 2,
+  above: 3,
+  exceptional: 4,
+  elite: 5,
+};
+
+function buildData(
+  zoneLevels: Partial<Record<Zone, StrengthLevel>>
+): IExerciseData[] {
+  const data: IExerciseData[] = [];
+  (Object.keys(ZONE_TO_MUSCLES) as Zone[]).forEach((zone) => {
+    const lvl = zoneLevels[zone] ?? "untrained";
+    const freq = LEVEL_TO_FREQ[lvl];
+    if (freq === 0) return;
+    data.push({
+      name: zone,
+      muscles: ZONE_TO_MUSCLES[zone],
+      frequency: freq,
+    });
+  });
+  return data;
 }
 
+// =====================================================================
+// Hitbox layer — invisible ellipses, ONE region per zone.
+// Coordinates are in the same 100 x 200 viewBox the visual layer uses.
+// =====================================================================
+type Region = {
+  zone: Zone;
+  // Each region has 1+ ellipse hitboxes (limbs have L+R, central zones have one)
+  ellipses: Array<{ cx: number; cy: number; rx: number; ry: number }>;
+};
+
+const FRONT_REGIONS: Region[] = [
+  { zone: "chest", ellipses: [{ cx: 50, cy: 49, rx: 22, ry: 11 }] },
+  { zone: "abs", ellipses: [{ cx: 50, cy: 84, rx: 17, ry: 27 }] },
+  {
+    zone: "shoulders",
+    ellipses: [
+      { cx: 24, cy: 44, rx: 8, ry: 9 },
+      { cx: 76, cy: 44, rx: 8, ry: 9 },
+    ],
+  },
+  {
+    zone: "biceps",
+    ellipses: [
+      { cx: 24, cy: 62, rx: 8, ry: 11 },
+      { cx: 76, cy: 62, rx: 8, ry: 11 },
+    ],
+  },
+  {
+    zone: "forearms",
+    ellipses: [
+      { cx: 11, cy: 87, rx: 10, ry: 16 },
+      { cx: 89, cy: 87, rx: 10, ry: 16 },
+    ],
+  },
+  {
+    zone: "quads",
+    ellipses: [
+      { cx: 33, cy: 122, rx: 11, ry: 26 },
+      { cx: 67, cy: 122, rx: 11, ry: 26 },
+    ],
+  },
+  {
+    zone: "calves",
+    ellipses: [
+      { cx: 29, cy: 175, rx: 10, ry: 22 },
+      { cx: 71, cy: 175, rx: 10, ry: 22 },
+    ],
+  },
+];
+
+const BACK_REGIONS: Region[] = [
+  { zone: "back", ellipses: [{ cx: 50, cy: 62, rx: 22, ry: 42 }] },
+  { zone: "glutes", ellipses: [{ cx: 50, cy: 112, rx: 22, ry: 14 }] },
+  {
+    zone: "shoulders",
+    ellipses: [
+      { cx: 23, cy: 46, rx: 8, ry: 10 },
+      { cx: 77, cy: 46, rx: 8, ry: 10 },
+    ],
+  },
+  {
+    zone: "triceps",
+    ellipses: [
+      { cx: 22, cy: 66, rx: 9, ry: 17 },
+      { cx: 78, cy: 66, rx: 9, ry: 17 },
+    ],
+  },
+  {
+    zone: "forearms",
+    ellipses: [
+      { cx: 11, cy: 93, rx: 10, ry: 16 },
+      { cx: 89, cy: 93, rx: 10, ry: 16 },
+    ],
+  },
+  {
+    zone: "hamstrings",
+    ellipses: [
+      { cx: 35, cy: 145, rx: 11, ry: 22 },
+      { cx: 65, cy: 145, rx: 11, ry: 22 },
+    ],
+  },
+  {
+    zone: "calves",
+    ellipses: [
+      { cx: 32, cy: 178, rx: 9, ry: 20 },
+      { cx: 68, cy: 178, rx: 9, ry: 20 },
+    ],
+  },
+];
+
 export default function BodySVG({ view, levels, onMuscleClick }: Props) {
-  const handle = (m: MuscleGroup) => () => onMuscleClick?.(m);
-  const common = {
-    stroke: baseStroke,
-    strokeWidth: 1,
-    strokeLinejoin: "round" as const,
-  };
+  const [hoveredZone, setHoveredZone] = useState<Zone | null>(null);
+  const regions = view === "front" ? FRONT_REGIONS : BACK_REGIONS;
 
   return (
-    <svg
-      viewBox="0 0 200 500"
-      className="w-full max-w-[340px] mx-auto select-none"
-      xmlns="http://www.w3.org/2000/svg"
-    >
-      {/* Body silhouette base */}
-      <g fill={baseFill} stroke={baseStroke} strokeWidth={1.2} strokeLinejoin="round">
-        {/* Head */}
-        <circle cx="100" cy="38" r="22" />
-        {/* Neck */}
-        <rect x="92" y="55" width="16" height="14" />
-        {/* Torso */}
-        <path d="M 60 72 Q 70 68 100 70 Q 130 68 140 72 L 146 130 L 140 220 L 60 220 L 54 130 Z" />
-        {/* Hips/pelvis */}
-        <path d="M 60 220 L 140 220 L 138 260 Q 100 272 62 260 Z" />
-        {/* Left arm (viewer left = body right) */}
-        <path d="M 54 80 Q 42 100 42 150 L 38 220 L 46 230 L 56 220 L 60 150 Z" />
-        {/* Right arm */}
-        <path d="M 146 80 Q 158 100 158 150 L 162 220 L 154 230 L 144 220 L 140 150 Z" />
-        {/* Left leg */}
-        <path d="M 62 260 L 70 360 L 72 470 L 88 480 L 96 470 L 96 360 L 100 260 Z" />
-        {/* Right leg */}
-        <path d="M 138 260 L 130 360 L 128 470 L 112 480 L 104 470 L 104 360 L 100 260 Z" />
-        {/* Feet */}
-        <ellipse cx="80" cy="488" rx="14" ry="6" />
-        <ellipse cx="120" cy="488" rx="14" ry="6" />
-      </g>
+    <div className="relative h-full w-full select-none flex items-center justify-center">
+      {/* Mystical energy emanating from the character — deep, subtle, purple. */}
+      <div
+        aria-hidden
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(ellipse 30% 45% at 50% 50%, rgba(91,57,147,0.28) 0%, rgba(40,30,60,0.10) 45%, transparent 75%)",
+          filter: "blur(24px)",
+        }}
+      />
 
-      {view === "front" ? (
-        <g {...common}>
-          {/* Shoulders (front delts) */}
-          <path
-            id="shoulders-l"
-            className="muscle-zone"
-            onClick={handle("shoulders")}
-            d="M 56 76 Q 50 80 52 100 Q 60 108 72 102 Q 78 92 74 78 Q 64 72 56 76 Z"
-            fill={fillFor("shoulders", levels)}
+      {/* Tooltip */}
+      <div
+        className={`absolute left-1/2 -translate-x-1/2 top-2 z-30 px-3 py-1 text-[11px] uppercase tracking-[0.18em] font-semibold text-gold bg-panel border border-bronze rounded pointer-events-none transition-opacity duration-150 ${
+          hoveredZone ? "opacity-100" : "opacity-0"
+        }`}
+        style={{
+          fontFamily: "var(--font-cinzel), Georgia, serif",
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.06), 0 2px 8px rgba(0,0,0,0.6)",
+        }}
+      >
+        {hoveredZone ? ZONE_LABEL[hoveredZone] : ""}
+      </div>
+
+      {/* Figure: height-driven box. The library's intrinsic SVG already
+         includes head, hands, and feet — letting it render at natural
+         scale (no transform) keeps the entire figure inside the box. */}
+      <div
+        className="relative h-full"
+        style={{ aspectRatio: "0.5 / 1" }}
+      >
+        {/* LAYER 1 — visual figure */}
+        <div
+          className="body-visual absolute inset-0"
+          style={{
+            filter:
+              "drop-shadow(0 0 18px rgba(91, 57, 147, 0.22)) drop-shadow(0 6px 24px rgba(0, 0, 0, 0.75))",
+          }}
+        >
+          <Model
+            type={view === "front" ? "anterior" : "posterior"}
+            data={buildData(levels)}
+            bodyColor="#2a2a3a"
+            highlightedColors={HIGHLIGHTED_COLORS}
+            style={{ width: "100%", height: "100%" }}
+            svgStyle={{ width: "100%", height: "100%" }}
           />
-          <path
-            id="shoulders-r"
-            className="muscle-zone"
-            onClick={handle("shoulders")}
-            d="M 144 76 Q 150 80 148 100 Q 140 108 128 102 Q 122 92 126 78 Q 136 72 144 76 Z"
-            fill={fillFor("shoulders", levels)}
-          />
-          {/* Chest (pec L+R) */}
-          <path
-            id="chest"
-            className="muscle-zone"
-            onClick={handle("chest")}
-            d="M 76 92 Q 100 86 124 92 Q 132 110 124 130 Q 110 138 100 132 Q 90 138 76 130 Q 68 110 76 92 Z"
-            fill={fillFor("chest", levels)}
-          />
-          {/* Biceps */}
-          <path
-            id="biceps-l"
-            className="muscle-zone"
-            onClick={handle("biceps")}
-            d="M 46 108 Q 40 130 44 152 Q 52 156 60 152 Q 62 130 58 108 Q 52 104 46 108 Z"
-            fill={fillFor("biceps", levels)}
-          />
-          <path
-            id="biceps-r"
-            className="muscle-zone"
-            onClick={handle("biceps")}
-            d="M 154 108 Q 160 130 156 152 Q 148 156 140 152 Q 138 130 142 108 Q 148 104 154 108 Z"
-            fill={fillFor("biceps", levels)}
-          />
-          {/* Abs */}
-          <path
-            id="abs"
-            className="muscle-zone"
-            onClick={handle("abs")}
-            d="M 84 138 L 116 138 L 118 218 Q 100 224 82 218 Z"
-            fill={fillFor("abs", levels)}
-          />
-          {/* Quads */}
-          <path
-            id="quads-l"
-            className="muscle-zone"
-            onClick={handle("quads")}
-            d="M 70 268 Q 64 320 74 358 Q 86 360 94 356 Q 98 320 96 268 Q 84 264 70 268 Z"
-            fill={fillFor("quads", levels)}
-          />
-          <path
-            id="quads-r"
-            className="muscle-zone"
-            onClick={handle("quads")}
-            d="M 130 268 Q 136 320 126 358 Q 114 360 106 356 Q 102 320 104 268 Q 116 264 130 268 Z"
-            fill={fillFor("quads", levels)}
-          />
-          {/* Calves (front shows shins/tibialis — labeled calves for unified group) */}
-          <path
-            id="calves-l"
-            className="muscle-zone"
-            onClick={handle("calves")}
-            d="M 76 388 Q 72 420 78 460 Q 88 462 94 458 Q 96 420 92 388 Q 84 386 76 388 Z"
-            fill={fillFor("calves", levels)}
-          />
-          <path
-            id="calves-r"
-            className="muscle-zone"
-            onClick={handle("calves")}
-            d="M 124 388 Q 128 420 122 460 Q 112 462 106 458 Q 104 420 108 388 Q 116 386 124 388 Z"
-            fill={fillFor("calves", levels)}
-          />
-        </g>
-      ) : (
-        <g {...common}>
-          {/* Rear delts */}
-          <path
-            id="shoulders-l-back"
-            className="muscle-zone"
-            onClick={handle("shoulders")}
-            d="M 56 76 Q 50 80 52 100 Q 60 108 72 102 Q 78 92 74 78 Q 64 72 56 76 Z"
-            fill={fillFor("shoulders", levels)}
-          />
-          <path
-            id="shoulders-r-back"
-            className="muscle-zone"
-            onClick={handle("shoulders")}
-            d="M 144 76 Q 150 80 148 100 Q 140 108 128 102 Q 122 92 126 78 Q 136 72 144 76 Z"
-            fill={fillFor("shoulders", levels)}
-          />
-          {/* Back (traps + lats as one zone) */}
-          <path
-            id="back"
-            className="muscle-zone"
-            onClick={handle("back")}
-            d="M 78 76 Q 100 70 122 76 L 130 130 Q 134 180 124 218 Q 100 224 76 218 Q 66 180 70 130 Z"
-            fill={fillFor("back", levels)}
-          />
-          {/* Triceps */}
-          <path
-            id="triceps-l"
-            className="muscle-zone"
-            onClick={handle("triceps")}
-            d="M 46 108 Q 40 132 44 156 Q 52 160 60 156 Q 62 132 58 108 Q 52 104 46 108 Z"
-            fill={fillFor("triceps", levels)}
-          />
-          <path
-            id="triceps-r"
-            className="muscle-zone"
-            onClick={handle("triceps")}
-            d="M 154 108 Q 160 132 156 156 Q 148 160 140 156 Q 138 132 142 108 Q 148 104 154 108 Z"
-            fill={fillFor("triceps", levels)}
-          />
-          {/* Glutes */}
-          <path
-            id="glutes"
-            className="muscle-zone"
-            onClick={handle("glutes")}
-            d="M 64 224 Q 80 218 100 222 Q 120 218 136 224 Q 138 252 120 264 Q 100 268 80 264 Q 62 252 64 224 Z"
-            fill={fillFor("glutes", levels)}
-          />
-          {/* Hamstrings */}
-          <path
-            id="hamstrings-l"
-            className="muscle-zone"
-            onClick={handle("hamstrings")}
-            d="M 70 270 Q 64 320 74 358 Q 86 360 94 356 Q 98 320 96 270 Q 84 266 70 270 Z"
-            fill={fillFor("hamstrings", levels)}
-          />
-          <path
-            id="hamstrings-r"
-            className="muscle-zone"
-            onClick={handle("hamstrings")}
-            d="M 130 270 Q 136 320 126 358 Q 114 360 106 356 Q 102 320 104 270 Q 116 266 130 270 Z"
-            fill={fillFor("hamstrings", levels)}
-          />
-          {/* Calves */}
-          <path
-            id="calves-l-back"
-            className="muscle-zone"
-            onClick={handle("calves")}
-            d="M 74 386 Q 68 420 78 462 Q 88 464 94 460 Q 98 420 92 386 Q 82 382 74 386 Z"
-            fill={fillFor("calves", levels)}
-          />
-          <path
-            id="calves-r-back"
-            className="muscle-zone"
-            onClick={handle("calves")}
-            d="M 126 386 Q 132 420 122 462 Q 112 464 106 460 Q 102 420 108 386 Q 118 382 126 386 Z"
-            fill={fillFor("calves", levels)}
-          />
-        </g>
-      )}
-    </svg>
+        </div>
+
+        {/* LAYER 2 — hitbox SVG, sits flush over the figure */}
+        <svg
+          viewBox="0 0 100 200"
+          className="absolute inset-0 w-full h-full z-10"
+          preserveAspectRatio="xMidYMid meet"
+          xmlns="http://www.w3.org/2000/svg"
+        >
+          {regions.map((r) => {
+            const isHovered = hoveredZone === r.zone;
+            return (
+              <g
+                key={`${view}-${r.zone}`}
+                onMouseEnter={() => setHoveredZone(r.zone)}
+                onMouseLeave={() => setHoveredZone(null)}
+                onClick={() => onMuscleClick?.(r.zone)}
+                style={{ cursor: "pointer" }}
+              >
+                {r.ellipses.map((e, i) => (
+                  <ellipse
+                    key={i}
+                    cx={e.cx}
+                    cy={e.cy}
+                    rx={e.rx}
+                    ry={e.ry}
+                    fill={
+                      isHovered
+                        ? "rgba(184, 134, 11, 0.14)"
+                        : "transparent"
+                    }
+                    stroke={
+                      isHovered ? "rgba(139, 115, 85, 0.7)" : "none"
+                    }
+                    strokeWidth={isHovered ? 0.5 : 0}
+                    style={{
+                      pointerEvents: "all",
+                      transition: "fill 150ms ease, stroke 150ms ease",
+                    }}
+                  />
+                ))}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
   );
 }

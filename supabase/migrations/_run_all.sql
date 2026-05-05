@@ -131,6 +131,113 @@ alter table public.personal_bests
     'vertical_jump'
   ));
 
+-- 7) step_goals.personal_goal — tiered Journey scoring (10k base + user goal)
+alter table public.step_goals
+  add column if not exists personal_goal integer default 20000;
+
+-- 8) workout_presets + preset_exercises (saved workout routines)
+create table if not exists public.workout_presets (
+  id uuid default gen_random_uuid() primary key,
+  user_id uuid references public.profiles(id) on delete cascade not null,
+  name text not null,
+  created_at timestamptz default now()
+);
+create table if not exists public.preset_exercises (
+  id uuid default gen_random_uuid() primary key,
+  preset_id uuid references public.workout_presets(id) on delete cascade not null,
+  exercise_name text not null,
+  muscle_group text not null,
+  sort_order integer default 0
+);
+create index if not exists workout_presets_user_id_idx
+  on public.workout_presets (user_id);
+create index if not exists preset_exercises_preset_id_idx
+  on public.preset_exercises (preset_id, sort_order);
+alter table public.workout_presets enable row level security;
+alter table public.preset_exercises enable row level security;
+drop policy if exists "owner all workout_presets" on public.workout_presets;
+create policy "owner all workout_presets"
+  on public.workout_presets for all
+  using (auth.uid() = user_id);
+drop policy if exists "owner all preset_exercises" on public.preset_exercises;
+create policy "owner all preset_exercises"
+  on public.preset_exercises for all
+  using (auth.uid() = (
+    select user_id from public.workout_presets where id = preset_id
+  ));
+
+-- 9) workout_sets.primary_muscle (precomputed primary muscle per set)
+alter table public.workout_sets
+  add column if not exists primary_muscle text;
+
+-- 10) Strength standards for the recently-added exercises.
+--     IMPORTANT: this is what unblocks the Atlas heatmap update for
+--     newly-logged sets — without standards, computeLevels skips them
+--     entirely. Mirrors the cross-join pattern in seed_standards.sql.
+with base(muscle_group, exercise_name, zone, b, a, ab, e, el) as (values
+  ('chest',      'Incline Press',                 'upper',      115, 160, 210, 260, 315),
+  ('chest',      'Decline Press',                 'upper',      145, 195, 245, 300, 360),
+  ('back',       'Lat Pulldown (Machine)',        'upper',      110, 145, 185, 230, 280),
+  ('back',       'Seated Machine Row',            'upper',      110, 145, 185, 230, 280),
+  ('back',       'Chest Supported T-Bar Row',     'upper',       95, 135, 180, 230, 280),
+  ('back',       'Seated Chest Supported Row',    'upper',      100, 140, 180, 225, 275),
+  ('back',       'Seated Neutral Row',            'upper',      100, 140, 180, 225, 275),
+  ('back',       'Reverse Fly',                   'upper',       15,  25,  40,  55,  75),
+  ('back',       'Shrugs',                        'upper',      135, 185, 245, 315, 405),
+  ('back',       'Prone Y-Raise',                 'upper',        5,  10,  15,  25,  35),
+  ('back',       'Back Extension',                'lower',       25,  45,  70, 100, 135),
+  ('triceps',    'Cable Pushdown',                'upper',       50,  75, 105, 140, 175),
+  ('triceps',    'Overhead Cable Rope Extension', 'upper',       35,  55,  80, 110, 140),
+  ('hamstrings', 'Seated Leg Curl',               'lower',       75, 115, 155, 200, 245),
+  ('calves',     'Tibialis Raise',                'lower',       25,  45,  65,  90, 120),
+  ('glutes',     'Clam Shell',                    'bodyweight',   0,   5,  10,  20,  35),
+  ('glutes',     'Side-Lying Hip Raise',          'bodyweight',   0,   5,  10,  20,  35),
+  ('glutes',     'Adductor Machine',              'lower',       90, 135, 180, 230, 280),
+  ('forearms',   'Wrist Curl',                    'upper',       30,  50,  75, 100, 130),
+  ('forearms',   'Reverse Curl',                  'upper',       25,  45,  65,  90, 115)
+),
+demos(age_group, age_mult) as (values
+  ('18-25', 1.00::numeric),
+  ('26-35', 1.00::numeric),
+  ('36-45', 0.92::numeric),
+  ('46+',   0.80::numeric)
+),
+sexes(sex) as (values ('male'), ('female')),
+sex_mults(zone, sex, sm) as (values
+  ('upper',      'male',   1.00::numeric),
+  ('lower',      'male',   1.00::numeric),
+  ('bodyweight', 'male',   1.00::numeric),
+  ('endurance',  'male',   1.00::numeric),
+  ('upper',      'female', 0.65::numeric),
+  ('lower',      'female', 0.75::numeric),
+  ('bodyweight', 'female', 0.55::numeric),
+  ('endurance',  'female', 0.85::numeric)
+)
+insert into public.strength_standards
+  (muscle_group, exercise_name, age_group, sex,
+   below_average_lbs, average_lbs, above_average_lbs, exceptional_lbs, elite_lbs)
+select
+  base.muscle_group,
+  base.exercise_name,
+  demos.age_group,
+  sexes.sex,
+  greatest(0, round(base.b  * demos.age_mult * sex_mults.sm)),
+  greatest(0, round(base.a  * demos.age_mult * sex_mults.sm)),
+  greatest(0, round(base.ab * demos.age_mult * sex_mults.sm)),
+  greatest(0, round(base.e  * demos.age_mult * sex_mults.sm)),
+  greatest(0, round(base.el * demos.age_mult * sex_mults.sm))
+from base
+cross join demos
+cross join sexes
+join sex_mults on sex_mults.zone = base.zone and sex_mults.sex = sexes.sex
+on conflict (exercise_name, age_group, sex) do update set
+  muscle_group        = excluded.muscle_group,
+  below_average_lbs   = excluded.below_average_lbs,
+  average_lbs         = excluded.average_lbs,
+  above_average_lbs   = excluded.above_average_lbs,
+  exceptional_lbs     = excluded.exceptional_lbs,
+  elite_lbs           = excluded.elite_lbs;
+
 -- ── Verification ────────────────────────────────────────────────
 select 'daily_nutrition' as obj,
        (to_regclass('public.daily_nutrition') is not null) as exists
@@ -179,4 +286,30 @@ union all select 'personal_bests.time_seconds',
          select 1 from information_schema.columns
          where table_schema='public' and table_name='personal_bests'
            and column_name='time_seconds'
+       )
+union all select 'step_goals.personal_goal',
+       exists (
+         select 1 from information_schema.columns
+         where table_schema='public' and table_name='step_goals'
+           and column_name='personal_goal'
+       )
+union all select 'workout_presets',
+       (to_regclass('public.workout_presets') is not null)
+union all select 'preset_exercises',
+       (to_regclass('public.preset_exercises') is not null)
+union all select 'workout_sets.primary_muscle',
+       exists (
+         select 1 from information_schema.columns
+         where table_schema='public' and table_name='workout_sets'
+           and column_name='primary_muscle'
+       )
+union all select 'standards: Chest Supported T-Bar Row',
+       exists (
+         select 1 from public.strength_standards
+         where exercise_name = 'Chest Supported T-Bar Row'
+       )
+union all select 'standards: Tibialis Raise',
+       exists (
+         select 1 from public.strength_standards
+         where exercise_name = 'Tibialis Raise'
        );

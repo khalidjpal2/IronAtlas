@@ -2,6 +2,7 @@
 
 import AppHeader, { type HeaderProfile } from "@/components/AppHeader";
 import { BADGES, type BadgeCategory } from "@/lib/badges";
+import { formatDate } from "@/lib/utils";
 
 type Scores = {
   atlas: number;
@@ -728,16 +729,4 @@ function BadgeSigil({ id, color }: { id: string; color: string }) {
   }
 }
 
-function formatEarnedDate(iso: string): string {
-  if (!iso) return "—";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
-}
+const formatEarnedDate = formatDate;

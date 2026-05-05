@@ -29,15 +29,21 @@ const INNER_R_IN = 80;
 
 const fontDisplay = { fontFamily: "var(--font-cinzel), Georgia, serif" };
 
-function colorFor(steps: number, goal: number): {
+function colorFor(
+  steps: number,
+  baseGoal: number,
+  personalGoal: number
+): {
   fill: string;
   stroke: string;
   glow: boolean;
 } {
   if (steps <= 0)
     return { fill: "rgba(58, 51, 64, 0.6)", stroke: "#3a3340", glow: false };
-  if (steps >= goal)
-    return { fill: "rgba(168, 85, 247, 0.55)", stroke: "#a855f7", glow: true };
+  if (steps >= personalGoal)
+    return { fill: "rgba(212, 160, 23, 0.55)", stroke: "#d4a017", glow: true };
+  if (steps >= baseGoal)
+    return { fill: "rgba(168, 85, 247, 0.55)", stroke: "#a855f7", glow: false };
   return { fill: "rgba(58, 90, 138, 0.45)", stroke: "#3a5a8a", glow: false };
 }
 
@@ -74,14 +80,20 @@ export default function CompassWheel({
   days30,
   days7,
   todaySteps,
-  goal,
+  baseGoal,
+  personalGoal,
+  size = SIZE,
 }: {
   /** Newest first. days30[0] = today. */
   days30: CompassDay[];
   /** Newest first. days7[0] = today. */
   days7: CompassDay[];
   todaySteps: number;
-  goal: number;
+  baseGoal: number;
+  personalGoal: number;
+  /** Rendered width/height in px. Internal coords stay locked to a
+   *  400-unit viewBox so the geometry scales uniformly. Default 400. */
+  size?: number;
 }) {
   const [hovered, setHovered] = useState<{
     label: string;
@@ -90,13 +102,21 @@ export default function CompassWheel({
     y: number;
   } | null>(null);
 
-  const goalPct = goal > 0 ? Math.min(1, todaySteps / goal) : 0;
-  const goalMet = todaySteps >= goal;
+  const goalPct =
+    personalGoal > 0 ? Math.min(1, todaySteps / personalGoal) : 0;
+  const baseMet = todaySteps >= baseGoal;
+  const personalMet = todaySteps >= personalGoal;
+  const centerStroke = personalMet ? "#d4a017" : baseMet ? "#a855f7" : "#6b4f3a";
+  const centerGlow = personalMet
+    ? "drop-shadow(0 0 14px rgba(212, 160, 23, 0.55))"
+    : baseMet
+    ? "drop-shadow(0 0 12px rgba(168, 85, 247, 0.45))"
+    : undefined;
 
   return (
     <div
       className="relative mx-auto"
-      style={{ width: SIZE, height: SIZE, maxWidth: "100%" }}
+      style={{ width: size, height: size, maxWidth: "100%" }}
     >
       <svg
         viewBox={`0 0 ${SIZE} ${SIZE}`}
@@ -137,7 +157,7 @@ export default function CompassWheel({
             const segStart = i * 12;
             const segEnd = (i + 1) * 12;
             const day = days30[i] ?? { date: "", steps: 0 };
-            const c = colorFor(day.steps, goal);
+            const c = colorFor(day.steps, baseGoal, personalGoal);
             const path = wedgePath(
               CENTER,
               CENTER,
@@ -187,7 +207,7 @@ export default function CompassWheel({
             const segStart = (i / 7) * 360;
             const segEnd = ((i + 1) / 7) * 360;
             const day = days7[i] ?? { date: "", steps: 0 };
-            const c = colorFor(day.steps, goal);
+            const c = colorFor(day.steps, baseGoal, personalGoal);
             const path = wedgePath(
               CENTER,
               CENTER,
@@ -248,20 +268,16 @@ export default function CompassWheel({
           cy={CENTER}
           r={INNER_R_IN - 4}
           fill="#0c0c18"
-          stroke={goalMet ? "#a855f7" : "#6b4f3a"}
+          stroke={centerStroke}
           strokeWidth="1.5"
-          style={
-            goalMet
-              ? { filter: "drop-shadow(0 0 14px rgba(168, 85, 247, 0.5))" }
-              : undefined
-          }
+          style={centerGlow ? { filter: centerGlow } : undefined}
         />
         <circle
           cx={CENTER}
           cy={CENTER}
           r={INNER_R_IN - 8}
           fill="none"
-          stroke={goalMet ? "#a855f7" : "#3a3340"}
+          stroke={centerStroke}
           strokeOpacity="0.5"
           strokeWidth="0.6"
         />
@@ -272,10 +288,10 @@ export default function CompassWheel({
           textAnchor="middle"
           fontSize="32"
           fontWeight="700"
-          fill={goalMet ? "#d4a020" : "#d8d2c2"}
+          fill={personalMet ? "#d4a020" : baseMet ? "#a855f7" : "#d8d2c2"}
           style={{
             ...fontDisplay,
-            textShadow: goalMet
+            textShadow: personalMet
               ? "0 0 12px rgba(184,134,11,0.7)"
               : "0 1px 0 rgba(0,0,0,0.7)",
           }}
@@ -294,14 +310,14 @@ export default function CompassWheel({
             textTransform: "uppercase",
           }}
         >
-          / {goal.toLocaleString()} goal
+          / {personalGoal.toLocaleString()} goal
         </text>
         <text
           x={CENTER}
           y={CENTER + 30}
           textAnchor="middle"
           fontSize="10"
-          fill={goalMet ? "#a855f7" : "#5a5246"}
+          fill={personalMet ? "#d4a017" : baseMet ? "#a855f7" : "#5a5246"}
           style={{
             ...fontDisplay,
             letterSpacing: "0.22em",

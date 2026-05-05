@@ -20,7 +20,9 @@ import {
   computeAtlasScore,
   computeJourneyScore,
   computeSustenanceScore,
+  currentStepStreak,
   daysSinceLastTrainedByZone,
+  JOURNEY_BASE_GOAL,
   type NutritionDay,
   type NutritionMode,
 } from "@/lib/scoring";
@@ -54,6 +56,7 @@ export default async function AchievementsPage() {
     { data: setsRows },
     { data: prRows },
     nutritionGoalsRes,
+    stepGoalRowRes,
     { data: stepsLast60 },
     { data: nutritionLast60 },
     earnedRes,
@@ -74,6 +77,11 @@ export default async function AchievementsPage() {
       .select(
         "calorie_goal, protein_goal_g, carbs_goal_g, fat_goal_g, mode, protein_direction, carbs_direction, fat_direction"
       )
+      .eq("user_id", user.id)
+      .maybeSingle(),
+    admin
+      .from("step_goals")
+      .select("daily_goal, personal_goal")
       .eq("user_id", user.id)
       .maybeSingle(),
     admin
@@ -102,6 +110,21 @@ export default async function AchievementsPage() {
       .maybeSingle();
     nutritionGoalsRow = legacy.data;
   }
+
+  // Same pattern for step_goals.personal_goal.
+  let stepGoalRow: any = stepGoalRowRes.data;
+  if (stepGoalRowRes.error) {
+    const legacy = await admin
+      .from("step_goals")
+      .select("daily_goal")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    stepGoalRow = legacy.data;
+  }
+  const personalGoal = Number(
+    stepGoalRow?.personal_goal ?? stepGoalRow?.daily_goal ?? 20000
+  );
+  const baseGoal = JOURNEY_BASE_GOAL;
 
   const standards: StandardRow[] = selectStandards(
     (allStandards ?? []) as StandardRow[],
@@ -135,12 +158,16 @@ export default async function AchievementsPage() {
   const zoneDecay = applyZoneDecay(zoneLevels, decayMap);
   const atlasScore = computeAtlasScore(zoneDecay);
 
-  const stepGoal = 10000; // best-effort; we don't need the row's own goal
   const stepsByDate = new Map<string, number>();
   (stepsLast60 ?? []).forEach((r: any) => {
     stepsByDate.set(String(r.date), Number(r.steps ?? 0));
   });
-  const journeyScore = computeJourneyScore(stepsByDate, stepGoal, todayISO);
+  const journeyScore = computeJourneyScore(
+    stepsByDate,
+    personalGoal,
+    todayISO,
+    baseGoal
+  );
 
   const nutritionByDate = new Map<string, NutritionDay>();
   (nutritionLast60 ?? []).forEach((r: any) => {
@@ -216,18 +243,8 @@ export default async function AchievementsPage() {
     (m, v) => (v > m ? v : m),
     0
   );
-  function currentStepStreak(): number {
-    let s = 0;
-    const end = new Date(todayISO + "T00:00:00");
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(end);
-      d.setDate(end.getDate() - i);
-      const iso = d.toISOString().slice(0, 10);
-      if ((stepsByDate.get(iso) ?? 0) >= stepGoal) s += 1;
-      else break;
-    }
-    return s;
-  }
+  const baseStepStreak = currentStepStreak(stepsByDate, baseGoal, todayISO);
+
   function currentNutritionStreak(): number {
     let s = 0;
     const end = new Date(todayISO + "T00:00:00");
@@ -260,7 +277,7 @@ export default async function AchievementsPage() {
       (prRows ?? []).map((r: any) => String(r.lift_name ?? ""))
     ).size,
     bestStepDay,
-    stepStreak: currentStepStreak(),
+    stepStreak: baseStepStreak,
     totalNutritionDays: nutritionByDate.size,
     nutritionStreak: currentNutritionStreak(),
     hitAllMacrosToday,

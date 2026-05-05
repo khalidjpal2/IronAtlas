@@ -264,6 +264,7 @@ input[type="number"] {
   .lift {
     transition: transform 200ms cubic-bezier(0.34, 1.56, 0.64, 1),
       box-shadow 200ms ease, border-color 200ms ease;
+    will-change: transform;
   }
   .lift:hover {
     transform: translateY(-1px);
@@ -276,6 +277,9 @@ input[type="number"] {
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  .pop {
+    will-change: transform;
+  }
   .pop:hover {
     transform: scale(1.02);
     transition: transform 150ms cubic-bezier(0.34, 1.56, 0.64, 1);
@@ -622,3 +626,25 @@ input[type="number"] {
 .glow-purple { }
 .glow-gold { }
 .xp-bar-fill { }
+
+/* ─────────────────────────────────────────────────────────────────
+   Banner sway — applies to every hung banner across the Lifting tab
+   (discipline banners + record banners). Each banner sets its own
+   --sway-delay inline so adjacent banners stagger. Declared globally
+   here so both SkillBox and RecordCard pick it up; the previously
+   component-scoped style block in SkillBox only animated the
+   discipline banners.
+   ───────────────────────────────────────────────────────────────── */
+.banner-body {
+  animation: sway 4s ease-in-out infinite;
+  animation-delay: var(--sway-delay, 0s);
+  transform-origin: top center;
+  transition: filter 200ms ease;
+}
+@keyframes sway {
+  0%, 100% { transform: rotate(-1.5deg); }
+  50% { transform: rotate(1.5deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .banner-body { animation: none; }
+}

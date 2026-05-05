@@ -7,6 +7,11 @@ import MonthCalendar, { type CalendarCell } from "@/components/MonthCalendar";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { useTheme } from "@/lib/useTheme";
 import { todayPT } from "@/lib/time";
+import { formatDate } from "@/lib/utils";
+import WorkoutPresets, {
+  type WorkoutPreset,
+  type LastSetByExercise,
+} from "@/components/WorkoutPresets";
 import {
   RECORDS_BY_ID,
   formatRecordValue,
@@ -14,26 +19,39 @@ import {
   parseTimeToSeconds,
 } from "@/lib/records";
 import {
+  EXERCISE_OPTIONS,
   LEVEL_COLOR,
   LEVEL_GRADIENT,
   LEVEL_LABEL,
   LEVEL_RANK,
   ZONES,
   ZONE_LABEL,
+  exerciseZone,
   exercisesForZone,
+  exercisesForZoneTiered,
   type Sex,
   type StrengthLevel,
   type TrainingExperience,
   type Zone,
 } from "@/lib/strength";
 
+export type { WorkoutPreset, LastSetByExercise };
+
+export type RecentByExercise = Record<
+  string,
+  Array<{ weight: number; reps: number; sets: number; date: string }>
+>;
+
 export type RecentSet = {
+  setId: string;
   workoutId: string;
   exercise: string;
+  muscleGroup: string;
   weight: number;
   reps: number;
   sets: number;
   date: string;
+  notes: string | null;
 };
 
 export type WorkoutDaySet = {
@@ -82,6 +100,14 @@ type Props = {
     totalVolume: number;
     streak: number;
   };
+  presets: WorkoutPreset[];
+  lastByExercise: LastSetByExercise;
+  recentByExercise: RecentByExercise;
+  scheduleDays: Array<{
+    day_of_week: number;
+    is_rest: boolean;
+    workout_type: string | null;
+  }>;
 };
 
 const todayISO = () => todayPT();
@@ -103,6 +129,10 @@ export default function LogWorkoutPage({
   records,
   workoutDays,
   stats,
+  presets,
+  lastByExercise,
+  recentByExercise,
+  scheduleDays,
 }: Props) {
   const router = useRouter();
   const supabase = createSupabaseBrowserClient();
@@ -122,6 +152,17 @@ export default function LogWorkoutPage({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [calendarDate, setCalendarDate] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
+  const [editTarget, setEditTarget] = useState<{
+    setId: string;
+    workoutId: string;
+    exerciseName: string;
+    muscleGroup: string;
+    weight: number;
+    reps: number;
+    sets: number;
+    date: string;
+    notes: string;
+  } | null>(null);
   const [bannerDetail, setBannerDetail] = useState<
     | { kind: "discipline"; zone: Zone }
     | { kind: "record"; record: RecordKindLocal }
@@ -219,16 +260,28 @@ export default function LogWorkoutPage({
         .single();
       if (wErr) throw wErr;
 
-      const { error: sErr } = await supabase.from("workout_sets").insert({
+      const baseSet = {
         workout_id: workout.id,
         exercise_name: exercise,
         muscle_group: zone,
         weight_lbs: Number(weight),
         reps: Number(reps),
         sets: Number(sets),
-        primary_muscle: ex?.muscles?.[0] ?? null,
-      });
-      if (sErr) throw sErr;
+      };
+      const { error: sErr } = await supabase
+        .from("workout_sets")
+        .insert({ ...baseSet, primary_muscle: ex?.muscles?.[0] ?? null });
+      if (sErr) {
+        const missingColumn =
+          sErr.code === "42703" ||
+          sErr.code === "PGRST204" ||
+          /primary_muscle/i.test(sErr.message ?? "");
+        if (!missingColumn) throw sErr;
+        const { error: sErr2 } = await supabase
+          .from("workout_sets")
+          .insert(baseSet);
+        if (sErr2) throw sErr2;
+      }
 
       setShowSuccess(true);
       resetForm(true);
@@ -255,6 +308,75 @@ export default function LogWorkoutPage({
       router.refresh();
     } catch (e: any) {
       alert(e?.message ?? "Failed to delete");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  /**
+   * Set-level delete (used by the Edit modal). Deletes the workout_sets
+   * row, then drops the parent workout if it has no remaining sets.
+   */
+  async function deleteSetById(setId: string, workoutId: string) {
+    setBusyId(setId);
+    try {
+      const { error: sErr } = await supabase
+        .from("workout_sets")
+        .delete()
+        .eq("id", setId);
+      if (sErr) throw sErr;
+      const { count, error: cErr } = await supabase
+        .from("workout_sets")
+        .select("id", { count: "exact", head: true })
+        .eq("workout_id", workoutId);
+      if (cErr) throw cErr;
+      if ((count ?? 0) === 0) {
+        const { error: wErr } = await supabase
+          .from("workouts")
+          .delete()
+          .eq("id", workoutId);
+        if (wErr) throw wErr;
+      }
+      setEditTarget(null);
+      router.refresh();
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to delete");
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function saveSetEdit() {
+    if (!editTarget) return;
+    setBusyId(editTarget.setId);
+    try {
+      const ex = EXERCISE_OPTIONS.find(
+        (e) => e.name === editTarget.exerciseName
+      );
+      const newZone = ex ? exerciseZone(ex) : editTarget.muscleGroup;
+      const { error: wErr } = await supabase
+        .from("workouts")
+        .update({
+          date: editTarget.date,
+          notes: editTarget.notes ? editTarget.notes : null,
+        })
+        .eq("id", editTarget.workoutId);
+      if (wErr) throw wErr;
+      const { error: sErr } = await supabase
+        .from("workout_sets")
+        .update({
+          exercise_name: editTarget.exerciseName,
+          muscle_group: newZone,
+          weight_lbs: Number(editTarget.weight),
+          reps: Number(editTarget.reps),
+          sets: Number(editTarget.sets),
+        })
+        .eq("id", editTarget.setId);
+      if (sErr) throw sErr;
+      setEditTarget(null);
+      router.refresh();
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to save");
     } finally {
       setBusyId(null);
     }
@@ -308,6 +430,16 @@ export default function LogWorkoutPage({
 
         {/* === LIFTING STATS — sword/shield/anvil/flame === */}
         <LiftingStatsRow stats={stats} />
+
+        {/* === MY WEEK === */}
+        <WeeklySchedule initialDays={scheduleDays} />
+
+        {/* === MY PRESETS === */}
+        <WorkoutPresets
+          userId={userId}
+          presets={presets}
+          lastByExercise={lastByExercise}
+        />
 
         {/* === SKILL GRID === */}
         <section>
@@ -400,7 +532,7 @@ export default function LogWorkoutPage({
               <ul className="divide-y divide-border bg-panel border border-border rounded-xl px-4">
                 {recentSets.map((r) => (
                   <li
-                    key={r.workoutId}
+                    key={r.setId}
                     className="py-3 flex items-center gap-4"
                   >
                     <div className="flex-1 min-w-0">
@@ -411,16 +543,28 @@ export default function LogWorkoutPage({
                     <div className="text-sm text-gold tabular-nums whitespace-nowrap font-semibold">
                       {r.weight} x {r.reps} x {r.sets}
                     </div>
-                    <div className="text-[11px] text-muted/70 w-20 text-right tabular-nums whitespace-nowrap uppercase tracking-wider">
-                      {formatShortDate(r.date)}
+                    <div className="text-[11px] text-muted/70 w-24 text-right tabular-nums whitespace-nowrap uppercase tracking-wider">
+                      {formatDate(r.date)}
                     </div>
                     <button
                       type="button"
-                      onClick={() => deleteSet(r.workoutId, r.exercise)}
-                      disabled={busyId === r.workoutId}
-                      className="w-8 h-8 flex items-center justify-center rounded-md text-muted hover:text-danger hover:bg-danger/10 disabled:opacity-40 transition"
-                      title="Delete"
-                      aria-label={`Delete ${r.exercise}`}
+                      onClick={() =>
+                        setEditTarget({
+                          setId: r.setId,
+                          workoutId: r.workoutId,
+                          exerciseName: r.exercise,
+                          muscleGroup: r.muscleGroup,
+                          weight: r.weight,
+                          reps: r.reps,
+                          sets: r.sets,
+                          date: r.date,
+                          notes: r.notes ?? "",
+                        })
+                      }
+                      disabled={busyId === r.setId}
+                      className="w-8 h-8 flex items-center justify-center rounded-md text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 transition"
+                      title="Edit"
+                      aria-label={`Edit ${r.exercise}`}
                     >
                       <svg
                         viewBox="0 0 24 24"
@@ -431,8 +575,8 @@ export default function LogWorkoutPage({
                         strokeLinejoin="round"
                         className="w-4 h-4"
                       >
-                        <polyline points="3 6 5 6 21 6" />
-                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                        <path d="M12 20h9" />
+                        <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
                       </svg>
                     </button>
                   </li>
@@ -454,6 +598,36 @@ export default function LogWorkoutPage({
             await deleteSet(workoutId, label);
             if (sameDay.length <= 1) setCalendarDate(null);
           }}
+          onEdit={(s) =>
+            setEditTarget({
+              setId: s.setId,
+              workoutId: s.workoutId,
+              exerciseName: s.exercise,
+              muscleGroup: s.muscleGroup,
+              weight: s.weight,
+              reps: s.reps,
+              sets: s.sets,
+              date: s.date,
+              notes: "",
+            })
+          }
+        />
+      )}
+
+      {/* Edit set modal */}
+      {editTarget && (
+        <EditSetModal
+          target={editTarget}
+          setTarget={setEditTarget}
+          onSave={saveSetEdit}
+          onDelete={async () => {
+            const ok = window.confirm(
+              `Delete ${editTarget.exerciseName}? This can't be undone.`
+            );
+            if (!ok) return;
+            await deleteSetById(editTarget.setId, editTarget.workoutId);
+          }}
+          busy={busyId === editTarget.setId}
         />
       )}
 
@@ -479,12 +653,10 @@ export default function LogWorkoutPage({
       {logOpen && (
         <LogSessionModal
           inputCls={inputCls}
-          selectCls={selectCls}
           zone={zone}
           setZone={setZone}
           exercise={exercise}
           setExercise={setExercise}
-          exerciseList={exerciseList}
           weight={weight}
           setWeight={setWeight}
           reps={reps}
@@ -501,11 +673,10 @@ export default function LogWorkoutPage({
           showSuccess={showSuccess}
           err={err}
           canSubmit={canSubmit}
-          onSubmit={async (e) => {
-            await onSubmit(e);
-            // onSubmit sets showSuccess; close shortly after the
-            // success state appears so the user sees the confirmation.
-          }}
+          lastByExercise={lastByExercise}
+          recentByExercise={recentByExercise}
+          zoneLevels={zoneLevels}
+          onSubmit={onSubmit}
           onClose={() => setLogOpen(false)}
         />
       )}
@@ -675,12 +846,13 @@ function SkillBox({
         </div>
       </div>
 
-      {/* The banner body — sways. Hover/active pauses the sway. */}
+      {/* The banner body — sways continuously, staggered by index so
+          adjacent banners aren't in lock-step. */}
       <div
         className="banner-body relative w-full"
         style={
           {
-            "--sway-delay": `${(idx % 5) * 0.6}s`,
+            "--sway-delay": `${idx * 0.3}s`,
           } as React.CSSProperties
         }
       >
@@ -820,30 +992,16 @@ function SkillBox({
         </div>
       </div>
 
-      {/* Component-scoped CSS — sway, shimmer, rune pulse */}
+      {/* Component-scoped CSS — shimmer + rune pulse only.
+          The sway animation lives in app/globals.css so it applies
+          to RecordCard banners too. */}
       <style jsx>{`
-        .banner-body {
-          animation: sway 4s ease-in-out infinite;
-          animation-delay: var(--sway-delay, 0s);
-          transform-origin: top center;
-          transition: filter 200ms ease;
-        }
-        .banner-button:hover .banner-body,
-        .banner-button:focus-visible .banner-body,
-        .banner-button[data-active="1"] .banner-body {
-          animation-play-state: paused;
-        }
+        /* Sway runs continuously even on hover / focus / active —
+           hover only brightens the fabric, never pauses the motion. */
         .banner-button:hover .banner-fabric,
         .banner-button:focus-visible .banner-fabric {
           filter: brightness(1.10) saturate(1.10);
           transition: filter 180ms ease;
-        }
-        @keyframes sway {
-          0%, 100% { transform: rotate(-1deg); }
-          50% { transform: rotate(1deg); }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          .banner-body { animation: none; }
         }
 
         .banner-shimmer {
@@ -1085,14 +1243,7 @@ function Chevron() {
   );
 }
 
-function formatShortDate(iso: string) {
-  if (!iso) return "—";
-  const d = new Date(iso + "T00:00:00");
-  return d.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
-}
+// formatShortDate removed in favour of the shared formatDate from lib/utils.
 
 // ─── Lifting stats — sword/shield/anvil/flame ─────────────────────
 function LiftingStatsRow({
@@ -1538,7 +1689,7 @@ function RecordCard({
       <div
         className="banner-body relative w-full"
         style={
-          { "--sway-delay": `${(idx % 5) * 0.6}s` } as React.CSSProperties
+          { "--sway-delay": `${idx * 0.3}s` } as React.CSSProperties
         }
       >
         <div
@@ -1842,6 +1993,7 @@ function RecordModal({
           <input
             type="date"
             value={date}
+            max={todayPT()}
             onChange={(e) => setDate(e.target.value)}
           />
         </div>
@@ -1899,20 +2051,40 @@ function TimeField({
   );
 }
 
-// ─── Lifting day modal ───────────────────────────────────────────
+// Per-zone accent color used by muscle-dot chips so each group reads
+// distinctly against the dark fantasy palette.
+const ZONE_ACCENT: Record<Zone, string> = {
+  chest: "#a83232",
+  back: "#3d6b3a",
+  shoulders: "#d97706",
+  biceps: "#3a5a8a",
+  triceps: "#7747b0",
+  forearms: "#8a6308",
+  abs: "#d4a017",
+  quads: "#c25a3a",
+  hamstrings: "#b8860b",
+  glutes: "#a855f7",
+  calves: "#4d7e4a",
+};
+
+// ─── Lifting day modal — grouped by exercise w/ accordion expand ─
 function LiftingDayModal({
   date,
   sets,
   busy,
   onClose,
   onDelete,
+  onEdit,
 }: {
   date: string;
   sets: WorkoutDaySet[];
   busy: string | null;
   onClose: () => void;
   onDelete: (workoutId: string, label: string) => void | Promise<void>;
+  onEdit: (s: WorkoutDaySet) => void;
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -1921,17 +2093,32 @@ function LiftingDayModal({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  function toggle(name: string) {
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
+
+  // Group sets by exercise name, preserving the order they appeared in.
+  const grouped = useMemo(() => {
+    const map = new Map<string, WorkoutDaySet[]>();
+    for (const s of sets) {
+      const list = map.get(s.exercise) ?? [];
+      list.push(s);
+      map.set(s.exercise, list);
+    }
+    return Array.from(map.entries());
+  }, [sets]);
+
   const totalVolume = sets.reduce(
     (a, s) => a + s.weight * s.reps * s.sets,
     0
   );
   const zonesWorked = Array.from(new Set(sets.map((s) => s.muscleGroup)));
-  const longLabel = new Date(date + "T00:00:00").toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  const longLabel = formatDate(date);
 
   return (
     <div
@@ -1985,82 +2172,198 @@ function LiftingDayModal({
           </p>
         ) : (
           <>
-            <div className="flex items-center gap-3 text-[11px] flex-wrap">
-              <span className="text-muted">
-                {sets.length} set{sets.length === 1 ? "" : "s"} ·{" "}
-                <span className="text-gold font-semibold tabular-nums">
-                  {totalVolume.toLocaleString()}
-                </span>{" "}
-                lbs total volume
-              </span>
+            {/* Summary header */}
+            <div
+              className="rounded p-3 grid grid-cols-3 gap-2 text-center"
+              style={{
+                background: "rgba(20, 14, 30, 0.55)",
+                border: "1px solid rgba(107, 79, 58, 0.4)",
+              }}
+            >
+              <SummaryStat label="Exercises" value={String(grouped.length)} />
+              <SummaryStat label="Sets" value={String(sets.length)} />
+              <SummaryStat
+                label="Volume"
+                value={`${totalVolume.toLocaleString()} lbs`}
+              />
             </div>
+
+            {/* Muscle-group dots */}
             {zonesWorked.length > 0 && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                {zonesWorked.map((z) => (
-                  <span
-                    key={z}
-                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] uppercase tracking-[0.18em]"
-                    style={{
-                      background: `${LEVEL_COLOR.untrained}22`,
-                      border: `1px solid ${LEVEL_COLOR.untrained}66`,
-                      color: "#d8d2c2",
-                      fontFamily: "var(--font-cinzel), Georgia, serif",
-                    }}
-                  >
-                    <span
-                      className="seal"
-                      style={{
-                        width: 6,
-                        height: 6,
-                        background: "#b8860b",
-                      }}
-                    />
-                    {ZONE_LABEL[z as keyof typeof ZONE_LABEL] ?? z}
-                  </span>
-                ))}
+              <div>
+                <div
+                  className="text-[10px] uppercase tracking-[0.22em] text-muted mb-1.5"
+                  style={fontDisplay}
+                >
+                  Muscles trained
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {zonesWorked.map((z) => {
+                    const accent =
+                      ZONE_ACCENT[z as Zone] ?? LEVEL_COLOR.untrained;
+                    return (
+                      <span
+                        key={z}
+                        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] uppercase tracking-[0.18em]"
+                        style={{
+                          background: `${accent}22`,
+                          border: `1px solid ${accent}66`,
+                          color: "#d8d2c2",
+                          fontFamily: "var(--font-cinzel), Georgia, serif",
+                        }}
+                      >
+                        <span
+                          aria-hidden
+                          style={{
+                            width: 7,
+                            height: 7,
+                            borderRadius: "50%",
+                            background: accent,
+                            boxShadow: `0 0 6px ${accent}`,
+                          }}
+                        />
+                        {ZONE_LABEL[z as keyof typeof ZONE_LABEL] ?? z}
+                      </span>
+                    );
+                  })}
+                </div>
               </div>
             )}
-            <ul className="divide-y divide-border">
-              {sets.map((s) => (
-                <li
-                  key={s.setId}
-                  className="py-2.5 flex items-center gap-3"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="text-sm text-ink truncate">
-                      {s.exercise}
-                    </div>
-                    <div className="text-[10px] uppercase tracking-[0.16em] text-muted/80 mt-0.5">
-                      {ZONE_LABEL[s.muscleGroup as keyof typeof ZONE_LABEL] ??
-                        s.muscleGroup}
-                    </div>
-                  </div>
-                  <div className="text-sm text-gold tabular-nums whitespace-nowrap font-semibold">
-                    {s.weight} x {s.reps} x {s.sets}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => onDelete(s.workoutId, s.exercise)}
-                    disabled={busy === s.workoutId}
-                    className="w-8 h-8 flex items-center justify-center rounded text-muted hover:text-danger hover:bg-danger/10 disabled:opacity-40 transition"
-                    title="Delete this workout"
-                    aria-label="Delete workout"
+
+            {/* Grouped exercises with accordion expand */}
+            <ul className="space-y-2">
+              {grouped.map(([exerciseName, group]) => {
+                const isOpen = expanded.has(exerciseName);
+                const totalSetsForEx = group.reduce(
+                  (a, g) => a + g.sets,
+                  0
+                );
+                const bestWeight = group.reduce(
+                  (a, g) => (g.weight > a ? g.weight : a),
+                  0
+                );
+                const accent =
+                  ZONE_ACCENT[group[0].muscleGroup as Zone] ??
+                  LEVEL_COLOR.untrained;
+                return (
+                  <li
+                    key={exerciseName}
+                    className="rounded overflow-hidden"
+                    style={{
+                      background: "rgba(20, 14, 30, 0.45)",
+                      border: "1px solid rgba(107, 79, 58, 0.4)",
+                    }}
                   >
-                    <svg
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      className="w-4 h-4"
+                    <button
+                      type="button"
+                      onClick={() => toggle(exerciseName)}
+                      aria-expanded={isOpen}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 text-left transition hover:bg-elevated/40"
                     >
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                    </svg>
-                  </button>
-                </li>
-              ))}
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-semibold text-ink truncate">
+                          {exerciseName}
+                        </div>
+                        <div className="text-[10px] uppercase tracking-[0.16em] text-muted/80 mt-0.5">
+                          {ZONE_LABEL[
+                            group[0].muscleGroup as keyof typeof ZONE_LABEL
+                          ] ?? group[0].muscleGroup}
+                          {" · "}
+                          {totalSetsForEx} set
+                          {totalSetsForEx === 1 ? "" : "s"}
+                        </div>
+                      </div>
+                      <div className="text-sm text-gold tabular-nums whitespace-nowrap font-semibold">
+                        {bestWeight} lbs
+                      </div>
+                      <span
+                        aria-hidden
+                        className="text-muted text-base shrink-0"
+                        style={{
+                          display: "inline-block",
+                          transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+                          transition: "transform 180ms ease",
+                        }}
+                      >
+                        ▶
+                      </span>
+                    </button>
+                    {isOpen && (
+                      <ul
+                        className="border-t border-bronze-deep/40 divide-y divide-bronze-deep/30"
+                        style={{
+                          borderLeft: `2px solid ${accent}`,
+                          marginLeft: 0,
+                        }}
+                      >
+                        {group.map((s, i) => (
+                          <li
+                            key={s.setId}
+                            className="py-2 pl-4 pr-3 flex items-center gap-3"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div
+                                className="text-[10px] uppercase tracking-[0.18em] text-muted"
+                                style={fontDisplay}
+                              >
+                                Set {i + 1}
+                              </div>
+                              <div className="text-sm tabular-nums text-ink/90">
+                                {s.weight} lbs × {s.reps} reps
+                                {s.sets > 1 ? ` × ${s.sets} sets` : ""}
+                              </div>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => onEdit(s)}
+                              disabled={
+                                busy === s.setId || busy === s.workoutId
+                              }
+                              className="w-8 h-8 flex items-center justify-center rounded text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 transition"
+                              title="Edit set"
+                              aria-label="Edit set"
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                className="w-4 h-4"
+                              >
+                                <path d="M12 20h9" />
+                                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
+                              </svg>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onDelete(s.workoutId, s.exercise)}
+                              disabled={busy === s.workoutId}
+                              className="w-8 h-8 flex items-center justify-center rounded text-muted hover:text-danger hover:bg-danger/10 disabled:opacity-40 transition"
+                              title="Delete this workout"
+                              aria-label="Delete workout"
+                            >
+                              <svg
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                className="w-4 h-4"
+                              >
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                              </svg>
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                );
+              })}
             </ul>
           </>
         )}
@@ -2069,15 +2372,29 @@ function LiftingDayModal({
   );
 }
 
-// ─── Log Session modal ───────────────────────────────────────────
+function SummaryStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div
+        className="text-[9px] uppercase tracking-[0.22em] text-gold/80 font-bold"
+        style={fontDisplay}
+      >
+        {label}
+      </div>
+      <div className="text-base font-bold text-ink mt-0.5 tabular-nums">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+// ─── Log Session modal — redesigned 2-column flow ────────────────
 function LogSessionModal({
   inputCls,
-  selectCls,
   zone,
   setZone,
   exercise,
   setExercise,
-  exerciseList,
   weight,
   setWeight,
   reps,
@@ -2094,16 +2411,17 @@ function LogSessionModal({
   showSuccess,
   err,
   canSubmit,
+  lastByExercise,
+  recentByExercise,
+  zoneLevels,
   onSubmit,
   onClose,
 }: {
   inputCls: string;
-  selectCls: string;
   zone: Zone | "";
   setZone: (v: Zone | "") => void;
   exercise: string;
   setExercise: (v: string) => void;
-  exerciseList: { name: string; muscles: string[] }[];
   weight: string;
   setWeight: (v: string) => void;
   reps: string;
@@ -2120,45 +2438,57 @@ function LogSessionModal({
   showSuccess: boolean;
   err: string | null;
   canSubmit: boolean;
+  lastByExercise: LastSetByExercise;
+  recentByExercise: RecentByExercise;
+  zoneLevels: Record<Zone, StrengthLevel>;
   onSubmit: (e: React.FormEvent) => void | Promise<void>;
   onClose: () => void;
 }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !submitting) onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, submitting]);
+
+  const exerciseList = useMemo(
+    () => (zone ? exercisesForZone(zone) : []),
+    [zone]
+  );
+  const last = exercise ? lastByExercise[exercise] : undefined;
+  const recent = exercise ? recentByExercise[exercise] ?? [] : [];
+
+  function adjustWeight(delta: number) {
+    const cur = Number(weight) || 0;
+    const next = Math.max(0, cur + delta);
+    setWeight(Number.isInteger(next) ? String(next) : next.toFixed(1));
+  }
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      className="fixed inset-0 z-50 flex items-stretch justify-center"
       style={{ animation: "modalFadeIn 180ms ease-out" }}
-      onClick={onClose}
+      onClick={() => !submitting && onClose()}
     >
       <div
         aria-hidden
         className="absolute inset-0"
         style={{
-          background: "rgba(0,0,0,0.65)",
-          backdropFilter: "blur(2px)",
+          background: "rgba(2, 2, 8, 0.85)",
+          backdropFilter: "blur(3px)",
         }}
       />
       <div
         onClick={(e) => e.stopPropagation()}
-        className="tablet relative rounded p-6 w-full max-w-2xl"
+        className="relative w-full max-w-5xl flex flex-col"
         style={{
-          maxHeight: "calc(100vh - 32px)",
-          overflowY: "auto",
-          boxShadow:
-            "inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 64px rgba(0,0,0,0.7)",
+          background: "var(--noise-bg), #0a0a14",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
         }}
       >
-        <span className="corner-bl" />
-        <span className="corner-br" />
-
-        <div className="flex items-center justify-between mb-4">
+        {/* Header */}
+        <header className="flex items-center justify-between gap-3 px-5 py-4 border-b border-bronze-deep/60 shrink-0">
           <div>
             <div
               className="text-[10px] uppercase tracking-[0.32em] text-gold/80"
@@ -2167,7 +2497,7 @@ function LogSessionModal({
               Training Ground
             </div>
             <h2
-              className="text-xl font-bold tracking-tight text-ink"
+              className="text-lg font-bold text-ink"
               style={fontDisplay}
             >
               Log Training Session
@@ -2176,148 +2506,650 @@ function LogSessionModal({
           <button
             type="button"
             onClick={onClose}
-            className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center rounded transition"
+            disabled={submitting}
+            className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center rounded transition disabled:opacity-40"
             aria-label="Close"
           >
             ×
           </button>
-        </div>
+        </header>
 
         <form
           onSubmit={onSubmit}
-          className="grid md:grid-cols-2 gap-x-8 gap-y-5"
+          className="flex-1 grid grid-cols-1 lg:grid-cols-[300px_1fr] overflow-hidden"
         >
-          <div className="space-y-5">
-            <Field label="Discipline">
-              <div className="relative">
-                <select
-                  value={zone}
-                  onChange={(e) => setZone(e.target.value as Zone | "")}
-                  className={selectCls}
-                >
-                  <option value="">Select a discipline</option>
-                  {ZONES.map((z) => (
-                    <option key={z} value={z}>
-                      {ZONE_LABEL[z]}
-                    </option>
-                  ))}
-                </select>
-                <Chevron />
-              </div>
-            </Field>
-
-            <Field label="Technique">
-              <div className="relative">
-                <select
-                  disabled={!zone}
-                  value={exercise}
-                  onChange={(e) => setExercise(e.target.value)}
-                  className={selectCls}
-                >
-                  <option value="">
-                    {zone
-                      ? "Select a technique"
-                      : "Choose a discipline first"}
-                  </option>
-                  {exerciseList.map((ex) => (
-                    <option key={ex.name} value={ex.name}>
-                      {ex.name}
-                    </option>
-                  ))}
-                </select>
-                <Chevron />
-              </div>
-            </Field>
-          </div>
-
-          <div className="space-y-5">
-            <Field label="Date">
-              <input
-                type="date"
-                value={date}
-                onChange={(e) => setDate(e.target.value)}
-                className={inputCls}
-              />
-            </Field>
-
-            <div className="grid grid-cols-3 gap-3">
-              <Field label="Weight (lbs)">
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  min="0"
-                  step="0.5"
-                  value={weight}
-                  onChange={(e) => setWeight(e.target.value)}
-                  placeholder="0"
-                  className={inputCls}
-                />
-              </Field>
-              <Field label="Reps">
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  min="1"
-                  value={reps}
-                  onChange={(e) => setReps(e.target.value)}
-                  placeholder="0"
-                  className={inputCls}
-                />
-              </Field>
-              <Field label="Sets">
-                <input
-                  type="number"
-                  inputMode="numeric"
-                  min="1"
-                  value={sets}
-                  onChange={(e) => setSets(e.target.value)}
-                  placeholder="0"
-                  className={inputCls}
-                />
-              </Field>
+          {/* LEFT — Muscle group grid */}
+          <aside className="border-r border-bronze-deep/60 p-4 overflow-y-auto">
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] text-gold font-bold mb-3"
+              style={fontDisplay}
+            >
+              Muscle Group
             </div>
+            <div className="grid grid-cols-2 gap-2">
+              {ZONES.map((z) => {
+                const isSelected = zone === z;
+                const lvlColor = LEVEL_COLOR[zoneLevels[z] ?? "untrained"];
+                return (
+                  <button
+                    key={z}
+                    type="button"
+                    onClick={() => {
+                      setZone(z);
+                      setExercise("");
+                    }}
+                    className="relative rounded px-3 py-3 text-center transition"
+                    style={{
+                      background: isSelected
+                        ? "rgba(184, 134, 11, 0.18)"
+                        : "rgba(20, 14, 30, 0.55)",
+                      border: isSelected
+                        ? "1px solid rgba(184, 134, 11, 0.85)"
+                        : "1px solid rgba(107, 79, 58, 0.4)",
+                      boxShadow: isSelected
+                        ? "0 0 14px rgba(184, 134, 11, 0.32), inset 0 1px 0 rgba(255,255,255,0.06)"
+                        : "inset 0 1px 0 rgba(255,255,255,0.03)",
+                    }}
+                  >
+                    <div
+                      aria-hidden
+                      className="absolute top-1.5 left-1.5 rounded-full"
+                      style={{
+                        width: 6,
+                        height: 6,
+                        background: lvlColor,
+                        boxShadow: `0 0 4px ${lvlColor}`,
+                      }}
+                    />
+                    <div
+                      className="text-[11px] uppercase tracking-[0.18em] font-bold"
+                      style={{
+                        ...fontDisplay,
+                        color: isSelected ? "#d4a020" : "#d8d2c2",
+                      }}
+                    >
+                      {ZONE_LABEL[z]}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </aside>
 
-            <div>
-              {!notesOpen ? (
-                <button
-                  type="button"
-                  onClick={() => setNotesOpen(true)}
-                  className="text-[11px] uppercase tracking-[0.18em] text-accent hover:text-accent-soft transition"
+          {/* RIGHT — Exercise list, then inputs + recent logs */}
+          <main className="flex flex-col overflow-hidden">
+            {!zone ? (
+              <div className="flex-1 flex items-center justify-center text-sm text-muted italic px-6 text-center">
+                Select a muscle group on the left to choose an exercise.
+              </div>
+            ) : !exercise ? (
+              <div className="flex-1 overflow-y-auto p-5">
+                <div
+                  className="text-[10px] uppercase tracking-[0.22em] text-gold font-bold mb-3"
                   style={fontDisplay}
                 >
-                  + Add notes
-                </button>
-              ) : (
-                <Field label="Notes">
-                  <input
-                    type="text"
-                    value={notes}
-                    onChange={(e) => setNotes(e.target.value)}
-                    placeholder="optional"
-                    className={inputCls}
-                  />
-                </Field>
-              )}
-            </div>
+                  Exercises · {ZONE_LABEL[zone as Zone]}
+                </div>
+                <ul className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {exerciseList.map((ex) => {
+                    const exLast = lastByExercise[ex.name];
+                    return (
+                      <li key={ex.name}>
+                        <button
+                          type="button"
+                          onClick={() => setExercise(ex.name)}
+                          className="w-full text-left rounded px-3 py-2.5 transition hover:border-gold/60"
+                          style={{
+                            background: "rgba(20, 14, 30, 0.55)",
+                            border: "1px solid rgba(107, 79, 58, 0.4)",
+                          }}
+                        >
+                          <div className="text-sm text-ink truncate">
+                            {ex.name}
+                          </div>
+                          {exLast ? (
+                            <div
+                              className="text-[10px] tabular-nums mt-0.5"
+                              style={{ color: "#b8860b" }}
+                            >
+                              Last: {exLast.weight} × {exLast.reps} ×{" "}
+                              {exLast.sets}
+                            </div>
+                          ) : (
+                            <div className="text-[10px] text-muted/60 italic mt-0.5">
+                              No previous data
+                            </div>
+                          )}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            ) : (
+              <>
+                <div
+                  className={`flex-1 overflow-y-auto p-5 space-y-4 ${
+                    showSuccess ? "log-session-pulse" : ""
+                  }`}
+                >
+                  <div className="flex items-baseline justify-between gap-2">
+                    <div className="min-w-0">
+                      <div
+                        className="text-[10px] uppercase tracking-[0.22em] text-muted"
+                        style={fontDisplay}
+                      >
+                        {ZONE_LABEL[zone as Zone]}
+                      </div>
+                      <h3
+                        className="text-2xl font-bold text-ink truncate"
+                        style={fontDisplay}
+                      >
+                        {exercise}
+                      </h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setExercise("")}
+                      className="text-[10px] uppercase tracking-[0.22em] text-muted hover:text-ink transition shrink-0"
+                      style={fontDisplay}
+                      title="Pick a different exercise"
+                    >
+                      ← Change
+                    </button>
+                  </div>
 
-            {err && <p className="text-sm text-danger">{err}</p>}
+                  {/* Last time chip */}
+                  {last ? (
+                    <div
+                      className="rounded px-3 py-2 text-sm tabular-nums"
+                      style={{
+                        background: "rgba(184, 134, 11, 0.10)",
+                        border: "1px solid rgba(184, 134, 11, 0.32)",
+                        color: "#d4a020",
+                      }}
+                    >
+                      <span
+                        className="text-[10px] uppercase tracking-[0.22em] font-bold mr-2"
+                        style={fontDisplay}
+                      >
+                        Last time:
+                      </span>
+                      {last.weight} lbs × {last.reps} × {last.sets}
+                      <span className="text-muted/80">
+                        {" "}
+                        — {formatDate(last.date)}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-muted italic">
+                      No previous data for this exercise.
+                    </div>
+                  )}
 
-            <button
-              type="submit"
-              disabled={!canSubmit || submitting}
-              className={`btn-stone w-full ${
-                showSuccess ? "btn-stone-gold" : ""
-              }`}
-            >
-              {showSuccess
-                ? "Session Recorded"
-                : submitting
-                ? "Recording..."
-                : "Record Session"}
-            </button>
-          </div>
+                  {/* Big inputs */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <BigInputField
+                      label="Weight (lbs)"
+                      value={weight}
+                      onChange={setWeight}
+                      step={0.5}
+                      inputMode="decimal"
+                    />
+                    <BigInputField
+                      label="Reps"
+                      value={reps}
+                      onChange={setReps}
+                      inputMode="numeric"
+                    />
+                    <BigInputField
+                      label="Sets"
+                      value={sets}
+                      onChange={setSets}
+                      inputMode="numeric"
+                    />
+                  </div>
+
+                  {/* Quick weight adjust */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span
+                      className="text-[10px] uppercase tracking-[0.22em] text-muted"
+                      style={fontDisplay}
+                    >
+                      Quick adjust
+                    </span>
+                    {[-5, 5, 10].map((d) => (
+                      <button
+                        key={d}
+                        type="button"
+                        onClick={() => adjustWeight(d)}
+                        className="px-3 py-1.5 text-[11px] uppercase tracking-[0.18em] rounded border border-bronze-deep/40 text-muted hover:text-ink hover:border-gold/60 transition"
+                        style={fontDisplay}
+                      >
+                        {d > 0 ? `+${d}` : d}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Date + notes */}
+                  <div className="grid grid-cols-1 sm:grid-cols-[1fr_2fr] gap-3">
+                    <div>
+                      <label
+                        className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+                        style={fontDisplay}
+                      >
+                        Date
+                      </label>
+                      <input
+                        type="date"
+                        value={date}
+                        max={todayPT()}
+                        onChange={(e) => setDate(e.target.value)}
+                        className={inputCls}
+                      />
+                    </div>
+                    <div>
+                      {!notesOpen ? (
+                        <div className="h-full flex items-end">
+                          <button
+                            type="button"
+                            onClick={() => setNotesOpen(true)}
+                            className="text-[11px] uppercase tracking-[0.18em] text-accent hover:text-accent-soft transition"
+                            style={fontDisplay}
+                          >
+                            + Add notes
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <label
+                            className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+                            style={fontDisplay}
+                          >
+                            Notes
+                          </label>
+                          <input
+                            type="text"
+                            value={notes}
+                            onChange={(e) => setNotes(e.target.value)}
+                            placeholder="optional"
+                            className={inputCls}
+                          />
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Recent log strip */}
+                  {recent.length > 0 && (
+                    <div className="pt-2 border-t border-bronze-deep/40">
+                      <div
+                        className="text-[10px] uppercase tracking-[0.22em] text-gold font-bold mb-2"
+                        style={fontDisplay}
+                      >
+                        Recent Logs
+                      </div>
+                      <ul className="space-y-1">
+                        {recent.map((r, i) => (
+                          <li
+                            key={i}
+                            className="flex items-baseline justify-between text-[11px]"
+                          >
+                            <span className="tabular-nums text-ink/85">
+                              {r.weight} × {r.reps} × {r.sets}
+                            </span>
+                            <span className="text-muted/80 uppercase tracking-[0.16em]">
+                              {formatDate(r.date)}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {err && <p className="text-sm text-danger">{err}</p>}
+                </div>
+
+                {/* Sticky submit */}
+                <div className="border-t border-bronze-deep/60 p-4 shrink-0">
+                  <button
+                    type="submit"
+                    disabled={!canSubmit || submitting}
+                    className={`btn-stone w-full ${
+                      showSuccess ? "btn-stone-gold" : ""
+                    }`}
+                    style={{
+                      ...fontDisplay,
+                      letterSpacing: "0.22em",
+                    }}
+                  >
+                    {showSuccess
+                      ? "Session Recorded"
+                      : submitting
+                      ? "Recording…"
+                      : "Record Session"}
+                  </button>
+                </div>
+              </>
+            )}
+          </main>
         </form>
       </div>
+
+      <style jsx>{`
+        :global(.log-session-pulse) {
+          animation: logSessionPulse 1.4s ease-out;
+        }
+        @keyframes logSessionPulse {
+          0% { background-color: transparent; }
+          25% { background-color: rgba(212, 160, 23, 0.12); }
+          100% { background-color: transparent; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ─── Big input field — used in the redesigned log session form ───
+// ─── Weekly workout schedule ──────────────────────────────────────
+type ScheduleDayClient = {
+  day_of_week: number;
+  is_rest: boolean;
+  workout_type: string | null;
+};
+
+const WORKOUT_TYPES: Array<{ value: string; label: string }> = [
+  { value: "push", label: "Push" },
+  { value: "pull", label: "Pull" },
+  { value: "legs", label: "Legs" },
+  { value: "upper", label: "Upper" },
+  { value: "lower", label: "Lower" },
+  { value: "full_body", label: "Full Body" },
+  { value: "custom", label: "Custom" },
+];
+
+// Display order: Mon..Sun (Mon = 1, Sun = 0).
+const WEEK_ORDER: Array<{ dow: number; short: string; full: string }> = [
+  { dow: 1, short: "Mon", full: "Monday" },
+  { dow: 2, short: "Tue", full: "Tuesday" },
+  { dow: 3, short: "Wed", full: "Wednesday" },
+  { dow: 4, short: "Thu", full: "Thursday" },
+  { dow: 5, short: "Fri", full: "Friday" },
+  { dow: 6, short: "Sat", full: "Saturday" },
+  { dow: 0, short: "Sun", full: "Sunday" },
+];
+
+function WeeklySchedule({
+  initialDays,
+}: {
+  initialDays: ScheduleDayClient[];
+}) {
+  const router = useRouter();
+  const [days, setDays] = useState<Record<number, ScheduleDayClient>>(() => {
+    const m: Record<number, ScheduleDayClient> = {};
+    for (const d of initialDays) m[d.day_of_week] = d;
+    // Default any missing day to a TRAIN entry with no type set.
+    for (const w of WEEK_ORDER) {
+      if (!m[w.dow]) {
+        m[w.dow] = {
+          day_of_week: w.dow,
+          is_rest: false,
+          workout_type: null,
+        };
+      }
+    }
+    return m;
+  });
+  const [busy, setBusy] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 1800);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  function setDay(dow: number, patch: Partial<ScheduleDayClient>) {
+    setDays((cur) => ({ ...cur, [dow]: { ...cur[dow], ...patch } }));
+    setDirty(true);
+  }
+
+  async function save() {
+    setBusy(true);
+    try {
+      const payload = WEEK_ORDER.map((w) => days[w.dow]);
+      const res = await fetch("/api/workout-schedule", {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ days: payload }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setToast("Saved");
+      setDirty(false);
+      router.refresh();
+    } catch (e: any) {
+      alert(e?.message ?? "Failed to save schedule");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section>
+      <div className="flex items-center gap-3 mb-4">
+        <h2
+          className="text-[12px] uppercase tracking-[0.22em] text-gold font-bold"
+          style={fontDisplay}
+        >
+          My Week
+        </h2>
+        <div className="rune-divider flex-1" />
+        {dirty && (
+          <button
+            type="button"
+            onClick={save}
+            disabled={busy}
+            className="btn-stone text-[10px]"
+            style={{
+              ...fontDisplay,
+              padding: "0.55rem 0.95rem",
+              letterSpacing: "0.22em",
+              background: "linear-gradient(180deg, #7747b0, #3a2466)",
+              borderColor: "#7747b0",
+              color: "#f0e6ff",
+            }}
+          >
+            {busy ? "Saving" : "Save Week"}
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
+        {WEEK_ORDER.map((w) => {
+          const d = days[w.dow];
+          const isRest = d.is_rest;
+          return (
+            <div
+              key={w.dow}
+              className="tablet relative rounded p-3"
+              style={{
+                background: isRest
+                  ? "rgba(20, 14, 30, 0.55)"
+                  : "rgba(91, 57, 147, 0.10)",
+                border: isRest
+                  ? "1px solid rgba(107, 79, 58, 0.4)"
+                  : "1px solid rgba(91, 57, 147, 0.45)",
+              }}
+            >
+              <div
+                className="text-[10px] uppercase tracking-[0.22em] text-gold/85 font-bold"
+                style={fontDisplay}
+              >
+                {w.short}
+              </div>
+              <div className="mt-2 flex bg-bg border border-bronze-deep rounded p-0.5 text-[10px] uppercase tracking-[0.18em]">
+                <button
+                  type="button"
+                  onClick={() => setDay(w.dow, { is_rest: false })}
+                  className={`flex-1 px-2 py-1 rounded-sm transition font-semibold ${
+                    !isRest
+                      ? "text-ink-strong"
+                      : "text-muted hover:text-ink"
+                  }`}
+                  style={{
+                    fontFamily: "var(--font-cinzel), Georgia, serif",
+                    background: !isRest ? "#7747b0" : undefined,
+                  }}
+                >
+                  Train
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDay(w.dow, { is_rest: true, workout_type: null })
+                  }
+                  className={`flex-1 px-2 py-1 rounded-sm transition font-semibold ${
+                    isRest ? "text-ink-strong" : "text-muted hover:text-ink"
+                  }`}
+                  style={{
+                    fontFamily: "var(--font-cinzel), Georgia, serif",
+                    background: isRest ? "#6b4f3a" : undefined,
+                  }}
+                >
+                  Rest
+                </button>
+              </div>
+              {!isRest && (
+                <select
+                  value={d.workout_type ?? ""}
+                  onChange={(e) =>
+                    setDay(w.dow, {
+                      workout_type: e.target.value || null,
+                    })
+                  }
+                  className="w-full mt-2 text-[11px]"
+                  style={{ minHeight: 32, padding: "4px 6px" }}
+                >
+                  <option value="">Type…</option>
+                  {WORKOUT_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              )}
+              {isRest && (
+                <div
+                  className="mt-2 text-[10px] uppercase tracking-[0.22em] text-muted text-center py-1.5"
+                  style={fontDisplay}
+                >
+                  Rest Day
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {toast && (
+        <div className="mt-2 text-[10px] uppercase tracking-[0.22em] text-gold/85" style={fontDisplay}>
+          {toast}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ─── Direct / Compound exercise tiers for a zone ─────────────────
+// Used inside DisciplineDetailModal. Splits the exercises that touch
+// this zone into "Direct" (primary target, mult 1.0) vs "Compound"
+// (secondary/tertiary, mult 0.3..<1.0). Caps each list so the modal
+// stays compact even for crowded zones like back/chest.
+function ZoneExerciseTiers({ zone }: { zone: Zone }) {
+  const all = exercisesForZoneTiered(zone);
+  const direct = all
+    .filter((e) => e.tier === "primary")
+    .map((e) => e.exercise)
+    .slice(0, 6);
+  const compound = all
+    .filter((e) => e.tier !== "primary")
+    .map((e) => e.exercise)
+    .slice(0, 6);
+  if (direct.length === 0 && compound.length === 0) return null;
+  return (
+    <div className="rounded p-3 space-y-2"
+      style={{
+        background: "rgba(20, 14, 30, 0.55)",
+        border: "1px solid rgba(107, 79, 58, 0.4)",
+      }}
+    >
+      {direct.length > 0 && (
+        <div>
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+            style={{ ...fontDisplay, color: "#d4a017" }}
+          >
+            Direct exercises
+          </div>
+          <div className="text-[11px] text-ink/85">
+            {direct.join(" · ")}
+          </div>
+        </div>
+      )}
+      {compound.length > 0 && (
+        <div>
+          <div
+            className="text-[10px] uppercase tracking-[0.22em] font-bold mb-1"
+            style={{ ...fontDisplay, color: "#a855f7" }}
+          >
+            Compound exercises
+          </div>
+          <div className="text-[11px] text-muted/85">
+            {compound.join(" · ")}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BigInputField({
+  label,
+  value,
+  onChange,
+  step,
+  inputMode,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  step?: number;
+  inputMode?: "numeric" | "decimal";
+}) {
+  return (
+    <div>
+      <label
+        className="block text-[10px] uppercase tracking-[0.22em] text-muted mb-1.5 font-bold"
+        style={fontDisplay}
+      >
+        {label}
+      </label>
+      <input
+        type="number"
+        inputMode={inputMode}
+        min="0"
+        step={step ?? 1}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="0"
+        className="w-full text-2xl font-bold tabular-nums text-center"
+        style={{
+          fontFamily: "var(--font-cinzel), Georgia, serif",
+          minHeight: 56,
+          padding: "10px 12px",
+        }}
+      />
     </div>
   );
 }
@@ -2473,12 +3305,272 @@ function DisciplineDetailModal({
           })}
         </ul>
 
+        {/* Direct / Compound exercise lists for this zone */}
+        <ZoneExerciseTiers zone={zone} />
+
         <button
           type="button"
           onClick={onLog}
           className="btn-stone w-full"
         >
           Log Training Session
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Edit Set modal ─────────────────────────────────────────────────
+type EditSetTarget = {
+  setId: string;
+  workoutId: string;
+  exerciseName: string;
+  muscleGroup: string;
+  weight: number;
+  reps: number;
+  sets: number;
+  date: string;
+  notes: string;
+};
+
+function EditSetModal({
+  target,
+  setTarget,
+  onSave,
+  onDelete,
+  busy,
+}: {
+  target: EditSetTarget;
+  setTarget: (t: EditSetTarget | null) => void;
+  onSave: () => void;
+  onDelete: () => void;
+  busy: boolean;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) setTarget(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [setTarget, busy]);
+
+  const exMatch = EXERCISE_OPTIONS.find((e) => e.name === target.exerciseName);
+  const liveZone = exMatch ? exerciseZone(exMatch) : target.muscleGroup;
+  const exerciseNames = useMemo(
+    () => EXERCISE_OPTIONS.map((e) => e.name).sort(),
+    []
+  );
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={() => !busy && setTarget(null)}
+      style={{ animation: "modalFadeIn 180ms ease-out" }}
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(2px)" }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="tablet relative rounded p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto"
+        style={{
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 64px rgba(0,0,0,0.7)",
+        }}
+      >
+        <span className="corner-bl" />
+        <span className="corner-br" />
+        <div className="flex items-center justify-between">
+          <div>
+            <div
+              className="text-[10px] uppercase tracking-[0.32em] text-gold/80"
+              style={fontDisplay}
+            >
+              Edit Set
+            </div>
+            <h2
+              className="text-xl font-bold mt-0.5 text-ink"
+              style={fontDisplay}
+            >
+              {target.exerciseName}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTarget(null)}
+            disabled={busy}
+            className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center rounded transition disabled:opacity-40"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <label
+          className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+          style={fontDisplay}
+        >
+          Exercise
+        </label>
+        <select
+          value={target.exerciseName}
+          onChange={(e) =>
+            setTarget({ ...target, exerciseName: e.target.value })
+          }
+          className="w-full"
+        >
+          {exerciseNames.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+
+        <div>
+          <label
+            className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+            style={fontDisplay}
+          >
+            Muscle Group
+          </label>
+          <div
+            className="rounded px-3 py-2 text-sm"
+            style={{
+              background: "rgba(20, 14, 30, 0.55)",
+              border: "1px solid rgba(184, 134, 11, 0.3)",
+              color: "#d8d2c2",
+            }}
+          >
+            {ZONE_LABEL[liveZone as Zone] ?? liveZone}
+            <span className="ml-2 text-[10px] uppercase tracking-[0.18em] text-muted">
+              auto
+            </span>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+              style={fontDisplay}
+            >
+              Weight
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              value={target.weight}
+              onChange={(e) =>
+                setTarget({ ...target, weight: Number(e.target.value) })
+              }
+              className="w-full"
+            />
+          </div>
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+              style={fontDisplay}
+            >
+              Reps
+            </label>
+            <input
+              type="number"
+              min="0"
+              value={target.reps}
+              onChange={(e) =>
+                setTarget({ ...target, reps: Number(e.target.value) })
+              }
+              className="w-full"
+            />
+          </div>
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+              style={fontDisplay}
+            >
+              Sets
+            </label>
+            <input
+              type="number"
+              min="0"
+              value={target.sets}
+              onChange={(e) =>
+                setTarget({ ...target, sets: Number(e.target.value) })
+              }
+              className="w-full"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label
+            className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+            style={fontDisplay}
+          >
+            Date
+          </label>
+          <input
+            type="date"
+            value={target.date}
+            max={todayPT()}
+            onChange={(e) => setTarget({ ...target, date: e.target.value })}
+            className="w-full"
+          />
+        </div>
+
+        <div>
+          <label
+            className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+            style={fontDisplay}
+          >
+            Notes
+          </label>
+          <input
+            type="text"
+            value={target.notes}
+            onChange={(e) => setTarget({ ...target, notes: e.target.value })}
+            placeholder="optional"
+            className="w-full"
+          />
+        </div>
+
+        <div className="flex items-center gap-2 pt-2">
+          <button
+            onClick={onSave}
+            disabled={busy}
+            className="btn-stone flex-1"
+            style={{
+              background: "linear-gradient(180deg, #7747b0, #3a2466)",
+              borderColor: "#7747b0",
+              color: "#f0e6ff",
+            }}
+          >
+            {busy ? "Saving…" : "Save Changes"}
+          </button>
+          <button
+            onClick={() => setTarget(null)}
+            disabled={busy}
+            className="btn-stone btn-stone-ghost px-4"
+          >
+            Cancel
+          </button>
+        </div>
+
+        <button
+          onClick={onDelete}
+          disabled={busy}
+          className="w-full text-[11px] uppercase tracking-[0.22em] font-bold py-2 rounded transition disabled:opacity-40"
+          style={{
+            ...fontDisplay,
+            background: "rgba(168, 50, 50, 0.12)",
+            border: "1px solid rgba(168, 50, 50, 0.45)",
+            color: "#d96666",
+          }}
+        >
+          Delete
         </button>
       </div>
     </div>

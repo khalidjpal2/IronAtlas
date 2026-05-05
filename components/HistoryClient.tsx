@@ -17,6 +17,8 @@ import {
   type StrengthLevel,
   type Zone,
 } from "@/lib/strength";
+import { todayPT } from "@/lib/time";
+import { formatDate } from "@/lib/utils";
 
 export type HistoryRow = {
   id: string;
@@ -86,15 +88,17 @@ export default function HistoryClient({
     return map;
   }, []);
 
+  const todayISO = todayPT();
   const filtered = useMemo(() => {
     return rows.filter((r) => {
+      if (r.date && r.date > todayISO) return false; // hide any future-dated rows
       if (filterZone && r.muscleGroup !== filterZone) return false;
       if (filterExercise && r.exerciseName !== filterExercise) return false;
       if (filterFrom && r.date < filterFrom) return false;
       if (filterTo && r.date > filterTo) return false;
       return true;
     });
-  }, [rows, filterZone, filterExercise, filterFrom, filterTo]);
+  }, [rows, filterZone, filterExercise, filterFrom, filterTo, todayISO]);
 
   const totalSets = rows.length;
   const mostTrained = (() => {
@@ -204,17 +208,33 @@ export default function HistoryClient({
 
   async function deleteRow(row: HistoryRow) {
     const ok = window.confirm(
-      `Delete ${row.exerciseName} on ${row.date}? This can't be undone.`
+      `Delete ${row.exerciseName}? This can't be undone.`
     );
     if (!ok) return;
     setBusyId(row.id);
     try {
-      const { error } = await supabase
-        .from("workouts")
+      // Delete this set only.
+      const { error: setErr } = await supabase
+        .from("workout_sets")
         .delete()
-        .eq("id", row.workoutId);
-      if (error) throw error;
+        .eq("id", row.id);
+      if (setErr) throw setErr;
+
+      // If this was the last set on the parent workout, drop the parent.
+      const { count, error: countErr } = await supabase
+        .from("workout_sets")
+        .select("id", { count: "exact", head: true })
+        .eq("workout_id", row.workoutId);
+      if (countErr) throw countErr;
+      if ((count ?? 0) === 0) {
+        const { error: wErr } = await supabase
+          .from("workouts")
+          .delete()
+          .eq("id", row.workoutId);
+        if (wErr) throw wErr;
+      }
       setToast("Deleted");
+      cancelEdit();
       router.refresh();
     } catch (e: any) {
       alert(e.message ?? "Failed to delete.");
@@ -339,6 +359,7 @@ export default function HistoryClient({
               <input
                 type="date"
                 value={filterFrom}
+                max={todayISO}
                 onChange={(e) => setFilterFrom(e.target.value)}
                 className="w-full bg-bg border border-border rounded-md px-2 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
               />
@@ -347,6 +368,7 @@ export default function HistoryClient({
               <input
                 type="date"
                 value={filterTo}
+                max={todayISO}
                 onChange={(e) => setFilterTo(e.target.value)}
                 className="w-full bg-bg border border-border rounded-md px-2 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
               />
@@ -379,20 +401,6 @@ export default function HistoryClient({
               </h3>
               <div className="space-y-2">
                 {items.map((row) => {
-                  if (editingId === row.id && edit) {
-                    return (
-                      <EditRow
-                        key={row.id}
-                        row={row}
-                        edit={edit}
-                        setEdit={setEdit}
-                        onCancel={cancelEdit}
-                        onSave={() => saveEdit(row)}
-                        busy={busyId === row.id}
-                        exerciseNames={exerciseNames}
-                      />
-                    );
-                  }
                   const std = stdByExercise.get(row.exerciseName);
                   const lvl: StrengthLevel = std
                     ? levelFromScore(
@@ -483,6 +491,25 @@ export default function HistoryClient({
         </section>
       </main>
 
+      {/* Edit Workout Set modal */}
+      {editingId && edit && (() => {
+        const row = rows.find((r) => r.id === editingId);
+        if (!row) return null;
+        return (
+          <EditWorkoutSetModal
+            row={row}
+            edit={edit}
+            setEdit={setEdit}
+            onCancel={cancelEdit}
+            onSave={() => saveEdit(row)}
+            onDelete={() => deleteRow(row)}
+            busy={busyId === row.id}
+            exerciseNames={exerciseNames}
+            todayISO={todayISO}
+          />
+        );
+      })()}
+
       {/* Toast */}
       <div
         className={`fixed bottom-24 md:bottom-6 left-1/2 -translate-x-1/2 z-40 px-4 py-2 text-[11px] uppercase tracking-[0.18em] font-bold rounded transition-opacity duration-200 ${
@@ -503,102 +530,205 @@ export default function HistoryClient({
   );
 }
 
-function EditRow({
+export function EditWorkoutSetModal({
   row,
   edit,
   setEdit,
   onCancel,
   onSave,
+  onDelete,
   busy,
   exerciseNames,
+  todayISO,
 }: {
   row: HistoryRow;
   edit: EditState;
   setEdit: (e: EditState) => void;
   onCancel: () => void;
   onSave: () => void;
+  onDelete: () => void;
   busy: boolean;
   exerciseNames: string[];
+  todayISO: string;
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onCancel();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel, busy]);
+
+  // Auto-update muscle group hint when exercise changes (cosmetic — the
+  // actual save uses exerciseZone() too, server-side this is the
+  // authoritative computation).
+  const exMatch = EXERCISE_OPTIONS.find((e) => e.name === edit.exerciseName);
+  const liveZone = exMatch ? exerciseZone(exMatch) : row.muscleGroup;
+
   return (
-    <div className="bg-panel border border-accent/40 rounded-xl p-4 space-y-3">
-      <div className="text-[10px] uppercase tracking-[0.2em] text-accent">
-        Editing
-      </div>
-      <FieldRow label="Exercise">
-        <select
-          value={edit.exerciseName}
-          onChange={(e) => setEdit({ ...edit, exerciseName: e.target.value })}
-          className="w-full bg-bg border border-border rounded-md px-2 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
-        >
-          {exerciseNames.map((n) => (
-            <option key={n} value={n}>
-              {n}
-            </option>
-          ))}
-        </select>
-      </FieldRow>
-      <div className="grid grid-cols-3 gap-2">
-        <FieldRow label="Weight">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={() => !busy && onCancel()}
+      style={{ animation: "modalFadeIn 180ms ease-out" }}
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(2px)" }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="tablet relative rounded p-6 w-full max-w-md space-y-4 max-h-[90vh] overflow-y-auto"
+        style={{
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 64px rgba(0,0,0,0.7)",
+        }}
+      >
+        <span className="corner-bl" />
+        <span className="corner-br" />
+        <div className="flex items-center justify-between">
+          <div>
+            <div
+              className="text-[10px] uppercase tracking-[0.32em] text-gold/80"
+              style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+            >
+              Edit Set
+            </div>
+            <h2
+              className="text-xl font-bold mt-0.5 text-ink"
+              style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+            >
+              {row.exerciseName}
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center rounded transition disabled:opacity-40"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <FieldRow label="Exercise">
+          <select
+            value={edit.exerciseName}
+            onChange={(e) =>
+              setEdit({ ...edit, exerciseName: e.target.value })
+            }
+            className="w-full"
+          >
+            {exerciseNames.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </FieldRow>
+
+        <FieldRow label="Muscle Group">
+          <div
+            className="rounded px-3 py-2 text-sm"
+            style={{
+              background: "rgba(20, 14, 30, 0.55)",
+              border: "1px solid rgba(184, 134, 11, 0.3)",
+              color: "#d8d2c2",
+            }}
+          >
+            {ZONE_LABEL[liveZone as Zone] ?? liveZone}
+            <span className="ml-2 text-[10px] uppercase tracking-[0.18em] text-muted">
+              auto
+            </span>
+          </div>
+        </FieldRow>
+
+        <div className="grid grid-cols-3 gap-2">
+          <FieldRow label="Weight">
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              value={edit.weight}
+              onChange={(e) => setEdit({ ...edit, weight: e.target.value })}
+              className="w-full"
+            />
+          </FieldRow>
+          <FieldRow label="Reps">
+            <input
+              type="number"
+              min="0"
+              value={edit.reps}
+              onChange={(e) => setEdit({ ...edit, reps: e.target.value })}
+              className="w-full"
+            />
+          </FieldRow>
+          <FieldRow label="Sets">
+            <input
+              type="number"
+              min="0"
+              value={edit.sets}
+              onChange={(e) => setEdit({ ...edit, sets: e.target.value })}
+              className="w-full"
+            />
+          </FieldRow>
+        </div>
+
+        <FieldRow label="Date">
           <input
-            type="number"
-            min="0"
-            step="0.5"
-            value={edit.weight}
-            onChange={(e) => setEdit({ ...edit, weight: e.target.value })}
-            className="w-full bg-bg border border-border rounded-md px-2 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
+            type="date"
+            value={edit.date}
+            max={todayISO}
+            onChange={(e) => setEdit({ ...edit, date: e.target.value })}
+            className="w-full"
           />
         </FieldRow>
-        <FieldRow label="Reps">
+
+        <FieldRow label="Notes">
           <input
-            type="number"
-            min="0"
-            value={edit.reps}
-            onChange={(e) => setEdit({ ...edit, reps: e.target.value })}
-            className="w-full bg-bg border border-border rounded-md px-2 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
+            type="text"
+            value={edit.notes}
+            onChange={(e) => setEdit({ ...edit, notes: e.target.value })}
+            placeholder="optional"
+            className="w-full"
           />
         </FieldRow>
-        <FieldRow label="Sets">
-          <input
-            type="number"
-            min="0"
-            value={edit.sets}
-            onChange={(e) => setEdit({ ...edit, sets: e.target.value })}
-            className="w-full bg-bg border border-border rounded-md px-2 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
-          />
-        </FieldRow>
-      </div>
-      <FieldRow label="Date">
-        <input
-          type="date"
-          value={edit.date}
-          onChange={(e) => setEdit({ ...edit, date: e.target.value })}
-          className="w-full bg-bg border border-border rounded-md px-2 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
-        />
-      </FieldRow>
-      <FieldRow label="Notes">
-        <input
-          type="text"
-          value={edit.notes}
-          onChange={(e) => setEdit({ ...edit, notes: e.target.value })}
-          placeholder="optional"
-          className="w-full bg-bg border border-border rounded-md px-2 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
-        />
-      </FieldRow>
-      <div className="flex items-center gap-2 pt-1">
+
+        <div className="flex items-center gap-2 pt-2">
+          <button
+            onClick={onSave}
+            disabled={busy}
+            className="btn-stone flex-1"
+            style={{
+              background: "linear-gradient(180deg, #7747b0, #3a2466)",
+              borderColor: "#7747b0",
+              color: "#f0e6ff",
+            }}
+          >
+            {busy ? "Saving…" : "Save Changes"}
+          </button>
+          <button
+            onClick={onCancel}
+            disabled={busy}
+            className="btn-stone btn-stone-ghost px-4"
+          >
+            Cancel
+          </button>
+        </div>
+
         <button
-          onClick={onSave}
+          onClick={onDelete}
           disabled={busy}
-          className="flex-1 bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium tracking-wide py-2 rounded-lg transition"
+          className="w-full text-[11px] uppercase tracking-[0.22em] font-bold py-2 rounded transition disabled:opacity-40"
+          style={{
+            fontFamily: "var(--font-cinzel), Georgia, serif",
+            background: "rgba(168, 50, 50, 0.12)",
+            border: "1px solid rgba(168, 50, 50, 0.45)",
+            color: "#d96666",
+          }}
         >
-          {busy ? "Saving…" : "Save Changes"}
-        </button>
-        <button
-          onClick={onCancel}
-          disabled={busy}
-          className="px-4 bg-bg border border-border hover:border-white/20 text-muted hover:text-white text-sm py-2 rounded-lg transition"
-        >
-          Cancel
+          Delete
         </button>
       </div>
     </div>
@@ -734,17 +864,3 @@ function labelForZone(zone: string): string {
   return ZONE_LABEL[zone as Zone] ?? zone;
 }
 
-function formatDate(iso: string): string {
-  if (!iso) return "—";
-  try {
-    const d = new Date(iso + "T00:00:00");
-    return d.toLocaleDateString(undefined, {
-      weekday: "short",
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
-}

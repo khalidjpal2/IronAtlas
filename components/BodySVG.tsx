@@ -242,10 +242,16 @@ export default function BodySVG({ view, levels, onMuscleClick }: Props) {
                         ? "rgba(184, 134, 11, 0.14)"
                         : "transparent"
                     }
+                    /* Keep stroke geometry constant — only the color
+                       toggles on hover. Changing strokeWidth on hover
+                       caused the stroke to snap into existence and
+                       flicker as the cursor crossed shape edges. */
                     stroke={
-                      isHovered ? "rgba(139, 115, 85, 0.7)" : "none"
+                      isHovered
+                        ? "rgba(139, 115, 85, 0.7)"
+                        : "transparent"
                     }
-                    strokeWidth={isHovered ? 0.5 : 0}
+                    strokeWidth={0.5}
                     style={{
                       pointerEvents: "all",
                       transition: "fill 150ms ease, stroke 150ms ease",

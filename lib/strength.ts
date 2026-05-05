@@ -1,3 +1,8 @@
+import {
+  mergeWithDbOverrides,
+  synthesizeStandardsFor,
+} from "./strength-standards";
+
 export type StrengthLevel =
   | "untrained"
   | "below"
@@ -145,7 +150,6 @@ export const ZONE_MUSCLES: Record<Zone, string[]> = {
     "Front Deltoid",
     "Side Deltoid",
     "Rear Deltoid",
-    "Rotator Cuff",
   ],
   biceps: [
     "Biceps Brachii (long head)",
@@ -172,8 +176,8 @@ export const ZONE_MUSCLES: Record<Zone, string[]> = {
     "Vastus Intermedius",
   ],
   hamstrings: ["Biceps Femoris", "Semitendinosus", "Semimembranosus"],
-  glutes: ["Gluteus Maximus", "Gluteus Medius", "Gluteus Minimus"],
-  calves: ["Gastrocnemius", "Soleus"],
+  glutes: ["Gluteus Maximus", "Gluteus Medius", "Gluteus Minimus", "Adductors"],
+  calves: ["Gastrocnemius", "Soleus", "Tibialis Anterior"],
 };
 
 export const MUSCLE_TO_ZONE: Record<string, Zone> = (() => {
@@ -187,111 +191,325 @@ export const MUSCLE_TO_ZONE: Record<string, Zone> = (() => {
 })();
 
 // =============================================================
+// Multi-muscle targeting — primary / secondary / tertiary
+// =============================================================
+//
+// Each Exercise can declare a `targets` map: tag → multiplier.
+// Tags are user-friendly labels (e.g. "chest", "front-deltoid",
+// "traps") that expand to a concrete list of muscle names via
+// TARGET_MUSCLES. When computeLevels processes a logged set, it
+// applies each target's multiplier to the effective-strength score
+// and propagates it to every muscle the tag covers. This lets a
+// compound lift (Bench Press, Deadlift, Dips) update multiple
+// muscles at once with proportional credit.
+//
+// Convention used in EXERCISE_OPTIONS:
+//   1.0  → primary (main target)
+//   0.6  → secondary (significant assistance)
+//   0.3  → tertiary (minor assistance)
+
+export const TARGET_MUSCLES: Record<string, string[]> = {
+  chest: [
+    "Pectoralis Major (upper)",
+    "Pectoralis Major (middle)",
+    "Pectoralis Major (lower)",
+    "Pectoralis Minor",
+  ],
+  serratus: ["Serratus Anterior"],
+  back: ["Latissimus Dorsi", "Rhomboids", "Erector Spinae", "Teres Major"],
+  traps: ["Trapezius (upper)", "Trapezius (middle)", "Trapezius (lower)"],
+  shoulders: ["Front Deltoid", "Side Deltoid", "Rear Deltoid"],
+  "front-deltoid": ["Front Deltoid"],
+  "side-deltoid": ["Side Deltoid"],
+  "rear-deltoid": ["Rear Deltoid"],
+  biceps: [
+    "Biceps Brachii (long head)",
+    "Biceps Brachii (short head)",
+    "Brachialis",
+  ],
+  triceps: [
+    "Triceps (long head)",
+    "Triceps (lateral head)",
+    "Triceps (medial head)",
+  ],
+  forearms: ["Wrist Flexors", "Wrist Extensors", "Brachioradialis"],
+  abs: [
+    "Rectus Abdominis",
+    "External Obliques",
+    "Internal Obliques",
+    "Transverse Abdominis",
+  ],
+  quads: [
+    "Rectus Femoris",
+    "Vastus Lateralis",
+    "Vastus Medialis",
+    "Vastus Intermedius",
+  ],
+  hamstrings: ["Biceps Femoris", "Semitendinosus", "Semimembranosus"],
+  glutes: ["Gluteus Maximus", "Gluteus Medius", "Gluteus Minimus", "Adductors"],
+  calves: ["Gastrocnemius", "Soleus", "Tibialis Anterior"],
+  // Tags that don't currently map to any modeled muscle (e.g. hip
+  // flexors) are silently dropped at compute time. Add a zone +
+  // muscle for them here if you ever model that anatomy.
+  "hip-flexors": [],
+};
+
+// Each tag also belongs to a primary heatmap zone — used by
+// `exerciseZone()` to pick the dropdown grouping for an exercise.
+export const TAG_TO_ZONE: Record<string, Zone> = {
+  chest: "chest",
+  serratus: "chest",
+  back: "back",
+  traps: "back",
+  shoulders: "shoulders",
+  "front-deltoid": "shoulders",
+  "side-deltoid": "shoulders",
+  "rear-deltoid": "shoulders",
+  biceps: "biceps",
+  triceps: "triceps",
+  forearms: "forearms",
+  abs: "abs",
+  quads: "quads",
+  hamstrings: "hamstrings",
+  glutes: "glutes",
+  calves: "calves",
+};
+
+// =============================================================
 // Exercises → individual muscles primarily targeted
 // =============================================================
 export type Exercise = {
   name: string;
+  /**
+   * Ordered list of specific muscle names — used for display in the
+   * History row, the Log session UI's exercise tile, etc. Index 0
+   * is treated as the legacy "primary" muscle when `targets` is
+   * omitted (back-compat path).
+   */
   muscles: string[];
+  /**
+   * Optional multi-muscle scoring map. Keys are tags from
+   * TARGET_MUSCLES; values are multipliers (1.0 primary, 0.6 secondary,
+   * 0.3 tertiary). When present, computeLevels applies the multiplier
+   * to the effective-strength score and propagates it to every muscle
+   * the tag expands to. When omitted, only `muscles[0]` gets a score
+   * at 1.0 (legacy behavior).
+   */
+  targets?: Record<string, number>;
 };
 
 export const EXERCISE_OPTIONS: Exercise[] = [
   // ── Chest ─────────────────────────────────────────────────────
-  // Primaries
-  { name: "Pec Deck", muscles: ["Pectoralis Major (middle)", "Pectoralis Major (upper)", "Pectoralis Major (lower)", "Serratus Anterior"] },
-  { name: "Machine Chest Press", muscles: ["Pectoralis Major (middle)", "Front Deltoid", "Triceps (lateral head)"] },
-  { name: "Bench Press", muscles: ["Pectoralis Major (middle)", "Front Deltoid", "Triceps (lateral head)"] },
-  // Others
-  { name: "Incline Bench Press", muscles: ["Pectoralis Major (upper)", "Front Deltoid"] },
-  { name: "Decline Bench Press", muscles: ["Pectoralis Major (lower)", "Triceps (lateral head)"] },
-  { name: "Push Up", muscles: ["Pectoralis Major (middle)", "Front Deltoid", "Triceps (lateral head)"] },
-  { name: "Cable Fly", muscles: ["Pectoralis Major (lower)", "Serratus Anterior"] },
+  { name: "Pec Deck", muscles: ["Pectoralis Major (middle)", "Pectoralis Major (upper)", "Pectoralis Major (lower)", "Serratus Anterior"], targets: { chest: 1.0, serratus: 0.3 } },
+  { name: "Machine Chest Press", muscles: ["Pectoralis Major (middle)", "Front Deltoid", "Triceps (lateral head)"], targets: { chest: 1.0, "front-deltoid": 0.6, triceps: 0.6 } },
+  { name: "Bench Press", muscles: ["Pectoralis Major (middle)", "Front Deltoid", "Triceps (lateral head)"], targets: { chest: 1.0, "front-deltoid": 0.6, triceps: 0.6 } },
+  { name: "Incline Bench Press", muscles: ["Pectoralis Major (upper)", "Front Deltoid", "Triceps (lateral head)"], targets: { chest: 1.0, "front-deltoid": 0.6, triceps: 0.6 } },
+  { name: "Incline Press", muscles: ["Pectoralis Major (upper)", "Front Deltoid", "Triceps (lateral head)"], targets: { chest: 1.0, "front-deltoid": 0.6, triceps: 0.6 } },
+  { name: "Decline Bench Press", muscles: ["Pectoralis Major (lower)", "Triceps (lateral head)"], targets: { chest: 1.0, triceps: 0.6 } },
+  { name: "Decline Press", muscles: ["Pectoralis Major (lower)", "Triceps (lateral head)"], targets: { chest: 1.0, triceps: 0.6 } },
+  { name: "Push Up", muscles: ["Pectoralis Major (middle)", "Front Deltoid", "Triceps (lateral head)"], targets: { chest: 1.0, "front-deltoid": 0.6, triceps: 0.6 } },
+  { name: "Cable Fly", muscles: ["Pectoralis Major (lower)", "Serratus Anterior"], targets: { chest: 1.0, serratus: 0.3 } },
 
   // ── Back ──────────────────────────────────────────────────────
-  // Primaries
-  { name: "Pull Up", muscles: ["Latissimus Dorsi", "Biceps Brachii (long head)", "Rear Deltoid"] },
-  { name: "Lat Pulldown", muscles: ["Latissimus Dorsi", "Biceps Brachii (long head)", "Rhomboids"] },
-  { name: "Cable Row", muscles: ["Rhomboids", "Latissimus Dorsi", "Trapezius (middle)", "Biceps Brachii (short head)"] },
-  { name: "T-Bar Row", muscles: ["Rhomboids", "Latissimus Dorsi", "Trapezius (middle)"] },
-  // Others
-  { name: "Barbell Row", muscles: ["Latissimus Dorsi", "Rhomboids", "Trapezius (middle)", "Biceps Brachii (short head)"] },
-  // Trapezius first so Face Pull groups under Back (matches the listed spec).
-  { name: "Face Pull", muscles: ["Trapezius (middle)", "Rear Deltoid"] },
-  { name: "Deadlift", muscles: ["Latissimus Dorsi", "Erector Spinae", "Gluteus Maximus", "Biceps Femoris"] },
+  { name: "Pull Up", muscles: ["Latissimus Dorsi", "Biceps Brachii (long head)", "Rear Deltoid"], targets: { back: 1.0, biceps: 0.6, "rear-deltoid": 0.3 } },
+  { name: "Lat Pulldown", muscles: ["Latissimus Dorsi", "Biceps Brachii (long head)", "Rhomboids"], targets: { back: 1.0, biceps: 0.6 } },
+  { name: "Lat Pulldown (Machine)", muscles: ["Latissimus Dorsi", "Biceps Brachii (long head)", "Rhomboids"], targets: { back: 1.0, biceps: 0.6 } },
+  { name: "Cable Row", muscles: ["Rhomboids", "Latissimus Dorsi", "Trapezius (middle)", "Biceps Brachii (short head)"], targets: { back: 1.0, biceps: 0.6, traps: 0.6 } },
+  { name: "Seated Machine Row", muscles: ["Rhomboids", "Latissimus Dorsi", "Biceps Brachii (short head)", "Trapezius (middle)"], targets: { back: 1.0, biceps: 0.6, traps: 0.6 } },
+  { name: "T-Bar Row", muscles: ["Rhomboids", "Latissimus Dorsi", "Trapezius (middle)"], targets: { back: 1.0, biceps: 0.6, traps: 0.6 } },
+  { name: "Chest Supported T-Bar Row", muscles: ["Latissimus Dorsi", "Rhomboids", "Trapezius (middle)"], targets: { back: 1.0, biceps: 0.6, traps: 0.6 } },
+  { name: "Seated Chest Supported Row", muscles: ["Rhomboids", "Latissimus Dorsi", "Trapezius (middle)"], targets: { back: 1.0, biceps: 0.6, traps: 0.6 } },
+  { name: "Seated Neutral Row", muscles: ["Rhomboids", "Latissimus Dorsi", "Trapezius (middle)"], targets: { back: 1.0, biceps: 0.6, traps: 0.6 } },
+  { name: "Barbell Row", muscles: ["Latissimus Dorsi", "Rhomboids", "Trapezius (middle)", "Biceps Brachii (short head)"], targets: { back: 1.0, biceps: 0.6, traps: 0.6 } },
+  { name: "Face Pull", muscles: ["Rear Deltoid", "Trapezius (middle)", "Rhomboids"], targets: { shoulders: 1.0, traps: 0.6, back: 0.3 } },
+  { name: "Reverse Fly", muscles: ["Rear Deltoid", "Rhomboids"], targets: { shoulders: 1.0, back: 0.3 } },
+  { name: "Shrugs", muscles: ["Trapezius (upper)"], targets: { traps: 1.0 } },
+  { name: "Prone Y-Raise", muscles: ["Trapezius (lower)", "Rear Deltoid"], targets: { back: 1.0, shoulders: 0.6 } },
+  { name: "Back Extension", muscles: ["Erector Spinae", "Gluteus Maximus", "Biceps Femoris"], targets: { back: 1.0, glutes: 0.3, hamstrings: 0.3 } },
+  { name: "Deadlift", muscles: ["Latissimus Dorsi", "Erector Spinae", "Gluteus Maximus", "Biceps Femoris"], targets: { back: 1.0, glutes: 0.6, hamstrings: 0.6, quads: 0.3 } },
 
   // ── Shoulders ─────────────────────────────────────────────────
-  // Primaries
-  { name: "Lateral Raise", muscles: ["Side Deltoid", "Trapezius (upper)"] },
-  { name: "Front Raise", muscles: ["Front Deltoid"] },
-  { name: "Machine Shoulder Press", muscles: ["Front Deltoid", "Side Deltoid", "Triceps (long head)"] },
-  // Others
-  { name: "Overhead Press", muscles: ["Front Deltoid", "Side Deltoid", "Triceps (long head)"] },
-  { name: "Arnold Press", muscles: ["Front Deltoid", "Side Deltoid"] },
-  { name: "Rear Delt Fly", muscles: ["Rear Deltoid"] },
+  { name: "Lateral Raise", muscles: ["Side Deltoid"], targets: { "side-deltoid": 1.0 } },
+  { name: "Front Raise", muscles: ["Front Deltoid"], targets: { "front-deltoid": 1.0 } },
+  { name: "Machine Shoulder Press", muscles: ["Front Deltoid", "Side Deltoid", "Triceps (long head)"], targets: { shoulders: 1.0, triceps: 0.3 } },
+  { name: "Overhead Press", muscles: ["Front Deltoid", "Side Deltoid", "Triceps (long head)"], targets: { shoulders: 1.0, triceps: 0.6 } },
+  { name: "Arnold Press", muscles: ["Front Deltoid", "Side Deltoid"], targets: { shoulders: 1.0, triceps: 0.6 } },
+  { name: "Rear Delt Fly", muscles: ["Rear Deltoid"], targets: { "rear-deltoid": 1.0 } },
 
   // ── Biceps ────────────────────────────────────────────────────
-  // Primaries
-  { name: "Incline Dumbbell Curl", muscles: ["Biceps Brachii (long head)", "Brachialis"] },
-  { name: "Hammer Curl", muscles: ["Brachialis", "Brachioradialis", "Biceps Brachii (long head)"] },
-  { name: "Preacher Curl", muscles: ["Biceps Brachii (short head)", "Brachialis"] },
-  // Others
-  { name: "Barbell Curl", muscles: ["Biceps Brachii (long head)", "Biceps Brachii (short head)"] },
-  { name: "Dumbbell Curl", muscles: ["Biceps Brachii (long head)", "Biceps Brachii (short head)"] },
-  { name: "Cable Curl", muscles: ["Biceps Brachii (long head)", "Biceps Brachii (short head)"] },
+  { name: "Incline Dumbbell Curl", muscles: ["Biceps Brachii (long head)", "Brachialis"], targets: { biceps: 1.0 } },
+  { name: "Hammer Curl", muscles: ["Brachialis", "Brachioradialis", "Biceps Brachii (long head)"], targets: { biceps: 1.0, forearms: 0.6 } },
+  { name: "Preacher Curl", muscles: ["Biceps Brachii (short head)", "Brachialis"], targets: { biceps: 1.0 } },
+  { name: "Barbell Curl", muscles: ["Biceps Brachii (long head)", "Biceps Brachii (short head)"], targets: { biceps: 1.0, forearms: 0.3 } },
+  { name: "Dumbbell Curl", muscles: ["Biceps Brachii (long head)", "Biceps Brachii (short head)"], targets: { biceps: 1.0, forearms: 0.3 } },
+  { name: "Cable Curl", muscles: ["Biceps Brachii (long head)", "Biceps Brachii (short head)"], targets: { biceps: 1.0 } },
 
   // ── Triceps ───────────────────────────────────────────────────
-  // Primaries
-  { name: "Tricep Pushdown", muscles: ["Triceps (lateral head)", "Triceps (medial head)"] },
-  { name: "Overhead Tricep Cable", muscles: ["Triceps (long head)"] },
-  { name: "Skull Crusher", muscles: ["Triceps (long head)", "Triceps (lateral head)"] },
-  { name: "Dumbbell Overhead Extension", muscles: ["Triceps (long head)"] },
-  // Others
-  { name: "Close Grip Bench Press", muscles: ["Triceps (lateral head)", "Pectoralis Major (middle)"] },
-  { name: "Dips", muscles: ["Triceps (lateral head)", "Pectoralis Major (lower)"] },
+  { name: "Tricep Pushdown", muscles: ["Triceps (lateral head)", "Triceps (medial head)"], targets: { triceps: 1.0 } },
+  { name: "Overhead Tricep Cable", muscles: ["Triceps (long head)"], targets: { triceps: 1.0 } },
+  { name: "Skull Crusher", muscles: ["Triceps (long head)", "Triceps (lateral head)"], targets: { triceps: 1.0 } },
+  { name: "Dumbbell Overhead Extension", muscles: ["Triceps (long head)"], targets: { triceps: 1.0 } },
+  { name: "Cable Pushdown", muscles: ["Triceps (lateral head)", "Triceps (medial head)"], targets: { triceps: 1.0 } },
+  { name: "Overhead Cable Rope Extension", muscles: ["Triceps (long head)"], targets: { triceps: 1.0 } },
+  { name: "Close Grip Bench Press", muscles: ["Triceps (lateral head)", "Pectoralis Major (middle)"], targets: { triceps: 1.0, chest: 0.6 } },
+  { name: "Dips", muscles: ["Pectoralis Major (lower)", "Triceps (lateral head)"], targets: { chest: 1.0, triceps: 0.6, shoulders: 0.3 } },
 
   // ── Abs ───────────────────────────────────────────────────────
-  // Primaries
-  { name: "Ab Crunch Machine", muscles: ["Rectus Abdominis", "External Obliques"] },
-  { name: "Plank", muscles: ["Transverse Abdominis", "Rectus Abdominis"] },
-  { name: "Cable Crunch", muscles: ["Rectus Abdominis", "External Obliques"] },
-  // Others
-  { name: "Hanging Leg Raise", muscles: ["Rectus Abdominis"] },
-  { name: "Russian Twist", muscles: ["External Obliques", "Internal Obliques"] },
-  { name: "Ab Wheel", muscles: ["Rectus Abdominis", "Transverse Abdominis"] },
+  { name: "Ab Crunch Machine", muscles: ["Rectus Abdominis", "External Obliques"], targets: { abs: 1.0 } },
+  { name: "Plank", muscles: ["Transverse Abdominis", "Rectus Abdominis"], targets: { abs: 1.0 } },
+  { name: "Cable Crunch", muscles: ["Rectus Abdominis", "External Obliques"], targets: { abs: 1.0 } },
+  { name: "Hanging Leg Raise", muscles: ["Rectus Abdominis"], targets: { abs: 1.0, "hip-flexors": 0.6 } },
+  { name: "Russian Twist", muscles: ["External Obliques", "Internal Obliques"], targets: { abs: 1.0 } },
+  { name: "Ab Wheel", muscles: ["Rectus Abdominis", "Transverse Abdominis"], targets: { abs: 1.0 } },
 
   // ── Quads ─────────────────────────────────────────────────────
-  // Primaries
-  { name: "Squat", muscles: ["Rectus Femoris", "Vastus Lateralis", "Vastus Medialis", "Vastus Intermedius", "Gluteus Maximus", "Biceps Femoris"] },
-  { name: "Leg Extension", muscles: ["Rectus Femoris", "Vastus Lateralis", "Vastus Medialis", "Vastus Intermedius"] },
-  { name: "Leg Press", muscles: ["Rectus Femoris", "Vastus Lateralis", "Vastus Medialis", "Gluteus Maximus"] },
-  { name: "Hack Squat", muscles: ["Vastus Lateralis", "Vastus Medialis", "Gluteus Maximus"] },
-  // Others
-  { name: "Bulgarian Split Squat", muscles: ["Rectus Femoris", "Vastus Lateralis", "Gluteus Maximus"] },
+  { name: "Squat", muscles: ["Rectus Femoris", "Vastus Lateralis", "Vastus Medialis", "Vastus Intermedius", "Gluteus Maximus", "Biceps Femoris"], targets: { quads: 1.0, glutes: 0.6, hamstrings: 0.3 } },
+  { name: "Leg Extension", muscles: ["Rectus Femoris", "Vastus Lateralis", "Vastus Medialis", "Vastus Intermedius"], targets: { quads: 1.0 } },
+  { name: "Leg Press", muscles: ["Rectus Femoris", "Vastus Lateralis", "Vastus Medialis", "Gluteus Maximus"], targets: { quads: 1.0, glutes: 0.6 } },
+  { name: "Hack Squat", muscles: ["Vastus Lateralis", "Vastus Medialis", "Gluteus Maximus"], targets: { quads: 1.0, glutes: 0.6 } },
+  { name: "Bulgarian Split Squat", muscles: ["Rectus Femoris", "Vastus Lateralis", "Gluteus Maximus"], targets: { quads: 1.0, glutes: 0.6 } },
 
   // ── Hamstrings ────────────────────────────────────────────────
-  // Primaries
-  { name: "Hamstring Curl", muscles: ["Biceps Femoris", "Semitendinosus", "Semimembranosus"] },
-  { name: "Romanian Deadlift", muscles: ["Biceps Femoris", "Semitendinosus", "Gluteus Maximus", "Erector Spinae"] },
-  // Others
-  { name: "Good Morning", muscles: ["Biceps Femoris", "Erector Spinae"] },
-  { name: "Nordic Curl", muscles: ["Biceps Femoris", "Semitendinosus", "Semimembranosus"] },
+  { name: "Hamstring Curl", muscles: ["Biceps Femoris", "Semitendinosus", "Semimembranosus"], targets: { hamstrings: 1.0 } },
+  { name: "Seated Leg Curl", muscles: ["Biceps Femoris", "Semitendinosus", "Semimembranosus"], targets: { hamstrings: 1.0 } },
+  { name: "Romanian Deadlift", muscles: ["Biceps Femoris", "Semitendinosus", "Gluteus Maximus", "Erector Spinae"], targets: { hamstrings: 1.0, glutes: 0.6, back: 0.3 } },
+  { name: "Good Morning", muscles: ["Biceps Femoris", "Erector Spinae", "Gluteus Maximus"], targets: { hamstrings: 1.0, back: 0.6, glutes: 0.3 } },
+  { name: "Nordic Curl", muscles: ["Biceps Femoris", "Semitendinosus", "Semimembranosus"], targets: { hamstrings: 1.0 } },
 
   // ── Glutes ────────────────────────────────────────────────────
-  { name: "Hip Thrust", muscles: ["Gluteus Maximus", "Gluteus Medius"] },
-  { name: "Glute Bridge", muscles: ["Gluteus Maximus"] },
-  { name: "Cable Kickback", muscles: ["Gluteus Maximus"] },
-  { name: "Abductor Machine", muscles: ["Gluteus Medius", "Gluteus Minimus"] },
+  { name: "Hip Thrust", muscles: ["Gluteus Maximus", "Gluteus Medius"], targets: { glutes: 1.0, hamstrings: 0.3 } },
+  { name: "Glute Bridge", muscles: ["Gluteus Maximus"], targets: { glutes: 1.0 } },
+  { name: "Cable Kickback", muscles: ["Gluteus Maximus"], targets: { glutes: 1.0 } },
+  { name: "Clam Shell", muscles: ["Gluteus Medius", "Gluteus Minimus"], targets: { glutes: 1.0 } },
+  { name: "Side-Lying Hip Raise", muscles: ["Gluteus Medius"], targets: { glutes: 1.0 } },
+  { name: "Abductor Machine", muscles: ["Gluteus Medius", "Gluteus Minimus"], targets: { glutes: 1.0 } },
+  { name: "Adductor Machine", muscles: ["Adductors"], targets: { glutes: 1.0 } },
 
   // ── Calves ────────────────────────────────────────────────────
-  { name: "Standing Calf Raise", muscles: ["Gastrocnemius"] },
-  { name: "Seated Calf Raise", muscles: ["Soleus"] },
-  { name: "Leg Press Calf Raise", muscles: ["Gastrocnemius", "Soleus"] },
+  { name: "Standing Calf Raise", muscles: ["Gastrocnemius"], targets: { calves: 1.0 } },
+  { name: "Seated Calf Raise", muscles: ["Soleus"], targets: { calves: 1.0 } },
+  { name: "Leg Press Calf Raise", muscles: ["Gastrocnemius", "Soleus"], targets: { calves: 1.0 } },
+  { name: "Tibialis Raise", muscles: ["Tibialis Anterior"], targets: { calves: 1.0 } },
+
+  // ── Forearms ──────────────────────────────────────────────────
+  { name: "Wrist Curl", muscles: ["Wrist Flexors"], targets: { forearms: 1.0 } },
+  { name: "Reverse Curl", muscles: ["Wrist Extensors", "Brachioradialis"], targets: { forearms: 1.0, biceps: 0.3 } },
 ];
 
-// Pick a representative zone for the workout_sets.muscle_group column based on the
-// first individual muscle the exercise targets.
+// Pick a representative zone for the workout_sets.muscle_group column.
+// Prefer the primary tag (multiplier === 1.0) when `targets` is set;
+// fall back to the first muscle's zone otherwise.
 export function exerciseZone(ex: Exercise): Zone {
+  if (ex.targets) {
+    for (const [tag, mult] of Object.entries(ex.targets)) {
+      if (mult >= 1) {
+        const z = TAG_TO_ZONE[tag];
+        if (z) return z;
+      }
+    }
+  }
   const first = ex.muscles[0];
   return MUSCLE_TO_ZONE[first] ?? "chest";
+}
+
+// =============================================================
+// Reverse lookup — given a muscle name, which exercises target it
+// and at what tier?  Powers the muscle detail panel's
+// "Direct exercises" / "Compound exercises" sections.
+// =============================================================
+
+export type MuscleExerciseTier = "primary" | "secondary" | "tertiary";
+
+export type MuscleExerciseEntry = {
+  exercise: string;
+  multiplier: number;
+  tier: MuscleExerciseTier;
+};
+
+function tierFor(multiplier: number): MuscleExerciseTier {
+  if (multiplier >= 1) return "primary";
+  if (multiplier >= 0.5) return "secondary";
+  return "tertiary";
+}
+
+/**
+ * Return every exercise in EXERCISE_OPTIONS that targets the given
+ * muscle. Tier rule (per sub-muscle, not per-tag):
+ *   primary    — the muscle is the exercise's *declared* primary
+ *                (`ex.muscles[0] === muscle`). Broad tags like
+ *                `chest: 1.0` hit all pec heads, but only the head
+ *                listed first counts as primary.
+ *   secondary  — touched with multiplier >= 0.5 but not declared
+ *                primary (this catches Bench Press for upper pec:
+ *                tag mult = 1.0, but its primary is middle pec).
+ *   tertiary   — touched with multiplier < 0.5.
+ *
+ * Sort: primary first, then secondary (highest multiplier first),
+ * then tertiary.
+ */
+export function exercisesForMuscle(muscleName: string): MuscleExerciseEntry[] {
+  const out: MuscleExerciseEntry[] = [];
+  for (const ex of EXERCISE_OPTIONS) {
+    let mult = 0;
+    if (ex.targets) {
+      for (const [tag, m] of Object.entries(ex.targets)) {
+        const muscles = TARGET_MUSCLES[tag];
+        if (!muscles) continue;
+        if (muscles.includes(muscleName) && m > mult) mult = m;
+      }
+    } else if (ex.muscles[0] === muscleName) {
+      mult = 1.0;
+    }
+    if (mult <= 0) continue;
+    const isDeclaredPrimary = ex.muscles[0] === muscleName;
+    const tier: MuscleExerciseTier = isDeclaredPrimary
+      ? "primary"
+      : mult >= 0.5
+      ? "secondary"
+      : "tertiary";
+    out.push({ exercise: ex.name, multiplier: mult, tier });
+  }
+  const tierOrder: Record<MuscleExerciseTier, number> = {
+    primary: 0,
+    secondary: 1,
+    tertiary: 2,
+  };
+  return out.sort((a, b) => {
+    if (tierOrder[a.tier] !== tierOrder[b.tier]) {
+      return tierOrder[a.tier] - tierOrder[b.tier];
+    }
+    return b.multiplier - a.multiplier;
+  });
+}
+
+/**
+ * Same idea, but rolled up to a heatmap zone. Returns every exercise
+ * that has any target hitting any muscle in `zone`, with the highest
+ * multiplier observed across that zone's muscles.
+ */
+export function exercisesForZoneTiered(zone: Zone): MuscleExerciseEntry[] {
+  const muscles = new Set(ZONE_MUSCLES[zone]);
+  const out: MuscleExerciseEntry[] = [];
+  for (const ex of EXERCISE_OPTIONS) {
+    let best = 0;
+    if (ex.targets) {
+      for (const [tag, m] of Object.entries(ex.targets)) {
+        const tagMuscles = TARGET_MUSCLES[tag];
+        if (!tagMuscles) continue;
+        if (tagMuscles.some((tm) => muscles.has(tm)) && m > best) best = m;
+      }
+    } else if (muscles.has(ex.muscles[0])) {
+      best = 1.0;
+    }
+    if (best > 0) {
+      out.push({
+        exercise: ex.name,
+        multiplier: best,
+        tier: tierFor(best),
+      });
+    }
+  }
+  return out.sort((a, b) => b.multiplier - a.multiplier);
 }
 
 // All exercises whose primary zone matches.
@@ -323,28 +541,29 @@ export type StandardRow = {
 };
 
 /**
- * Pick the right standards rows for a user. We always pull the 18-25 rows
- * (peak demographic) and rely on AGE_ADJUSTMENT to boost an older lifter's
- * score, instead of selecting age-discounted standards. This avoids
- * double-counting age (once in the standard, once in the score).
+ * Pick the right standards rows for a user.
+ *
+ * Source-of-truth model: standards live in lib/strength-standards.ts as
+ * a TypeScript baseline. The runtime always synthesizes a full set for
+ * the user's sex (using the 18-25 cohort, since AGE_ADJUSTMENT boosts
+ * the score later — no double-counting). The DB `strength_standards`
+ * table is now an *override* layer: any row matching (exercise, 18-25,
+ * sex) replaces the code value, and any DB row for an exercise not in
+ * code is appended.
+ *
+ * Adding a new exercise to EXERCISE_OPTIONS + BASE_STANDARDS makes it
+ * grade immediately on the next page load — no SQL migration required.
  *
  * The `ageGroup` argument is accepted for backward compatibility but
  * intentionally ignored.
  */
 export function selectStandards(
-  all: StandardRow[],
+  all: StandardRow[] | null | undefined,
   _ageGroup: string,
   sex: string
 ): StandardRow[] {
-  const tries: Array<[string, string]> = [
-    ["18-25", sex],
-    ["18-25", "male"],
-  ];
-  for (const [a, s] of tries) {
-    const rows = all.filter((r) => r.age_group === a && r.sex === s);
-    if (rows.length > 0) return rows;
-  }
-  return all;
+  const codeRows = synthesizeStandardsFor("18-25", sex);
+  return mergeWithDbOverrides(codeRows, all ?? [], "18-25", sex);
 }
 
 /**
@@ -574,6 +793,7 @@ export type MuscleBestEntry = {
   weight: number;
   reps: number;
   sets: number;
+  date?: string; // ISO yyyy-mm-dd of the set that produced this best
   score: number; // effective strength after multiplier
   level: StrengthLevel;
 };
@@ -586,15 +806,22 @@ export type LevelComputation = {
 
 /**
  * Compute per-muscle strength levels and zone heatmap colors from a list of
- * logged sets and the current strength standards. The score for each muscle
- * is the BEST effective-strength score that any logged set has produced for
- * that muscle (full score for the exercise's primary muscle, 0.5 × score for
- * each secondary muscle).
+ * logged sets and the current strength standards.
  *
- * If `experience` is set above "never", an experience baseline multiplier is
- * applied to scores in each zone. The multiplier is full for the user's 1st
- * logged session in that zone, halfway for the 2nd, and gone entirely once
- * they have 3+ sessions.
+ * Multi-muscle scoring: every exercise's `targets` map (tag → multiplier)
+ * is expanded via TARGET_MUSCLES into a list of specific muscles. The
+ * effective-strength score is multiplied by the tier multiplier
+ * (1.0 primary / 0.6 secondary / 0.3 tertiary) and propagated to every
+ * muscle in that tag's expansion. A muscle's final score is the best
+ * value across all sets that touched it, and its level grades against
+ * the corresponding exercise's standard row.
+ *
+ * Exercises without a `targets` map fall back to the legacy behavior
+ * (only `muscles[0]` gets a score at 1.0) so older entries keep working.
+ *
+ * If `experience` is set above "never", an experience baseline multiplier
+ * is applied to scores in each zone. Full for the 1st logged session in
+ * that zone, halfway for the 2nd, gone entirely at 3+ sessions.
  */
 export function computeLevels(
   sets: SetRow[],
@@ -615,8 +842,8 @@ export function computeLevels(
   const stdByExercise = new Map<string, StandardRow>();
   standards.forEach((s) => stdByExercise.set(s.exercise_name, s));
 
-  // Distinct workout dates per zone, keyed by the exercise's primary zone so
-  // a bench session counts as a chest session (not a shoulder session).
+  // Distinct workout dates per zone, keyed by the exercise's primary zone
+  // so a bench session counts as a chest session (not a shoulder session).
   const datesByZone = new Map<Zone, Set<string>>();
   for (const row of sets) {
     const ex = exByName.get(row.exercise_name);
@@ -646,6 +873,30 @@ export function computeLevels(
     });
   });
 
+  // Resolve the (muscle, multiplier) pairs an exercise contributes to.
+  // Uses targets when present; falls back to legacy single-primary.
+  function resolveTargets(ex: Exercise): Array<[string, number]> {
+    const out: Array<[string, number]> = [];
+    if (ex.targets && Object.keys(ex.targets).length > 0) {
+      // For each (tag, multiplier), expand and emit one entry per
+      // muscle. If a muscle is referenced by multiple tags on the same
+      // exercise, keep the highest multiplier (defensive).
+      const byMuscle = new Map<string, number>();
+      for (const [tag, m] of Object.entries(ex.targets)) {
+        const muscles = TARGET_MUSCLES[tag];
+        if (!muscles || muscles.length === 0) continue;
+        for (const mu of muscles) {
+          const cur = byMuscle.get(mu) ?? 0;
+          if (m > cur) byMuscle.set(mu, m);
+        }
+      }
+      byMuscle.forEach((m, mu) => out.push([mu, m]));
+    } else if (ex.muscles[0]) {
+      out.push([ex.muscles[0], 1.0]);
+    }
+    return out;
+  }
+
   for (const row of sets) {
     const ex = exByName.get(row.exercise_name);
     const std = stdByExercise.get(row.exercise_name);
@@ -655,31 +906,29 @@ export function computeLevels(
     const s = Number(row.sets ?? 0);
     if (w <= 0 || r <= 0 || s <= 0) continue;
 
-    // ONLY the exercise's primary muscle gets a score. Compound lifts no
-    // longer "spill over" into secondary muscle scores — a muscle is
-    // untrained until the user logs an exercise where it's the primary
-    // target (matches the spec: "Muscles with no workouts logged =
-    // Untrained, score = 0").
-    const primaryMuscle = ex.muscles[0];
-    if (!primaryMuscle) continue;
+    // Bodyweight-relative ratio with age adjustment. Experience factor
+    // is applied per-muscle below since it's keyed to that muscle's zone.
+    const baseScore = effectiveStrength(w, r, s, bw) * ageAdj;
 
-    const muscleZone = MUSCLE_TO_ZONE[primaryMuscle];
-    const expFactor = (muscleZone && factorByZone[muscleZone]) || 1.0;
+    for (const [muscleName, multiplier] of resolveTargets(ex)) {
+      const muscleZone = MUSCLE_TO_ZONE[muscleName];
+      if (!muscleZone) continue; // unknown muscle — silently skip
+      const expFactor = factorByZone[muscleZone] || 1.0;
+      const score = baseScore * expFactor * multiplier;
 
-    // Bodyweight-relative ratio with experience baseline + age adjustment.
-    const score = effectiveStrength(w, r, s, bw) * expFactor * ageAdj;
-
-    const cur = muscleBest[primaryMuscle];
-    if (cur && score <= cur.score) continue;
-    muscleBest[primaryMuscle] = {
-      exercise: ex.name,
-      weight: w,
-      reps: r,
-      sets: s,
-      score,
-      level: levelFromScore(score, std),
-    };
-    muscleLevels[primaryMuscle] = muscleBest[primaryMuscle]!.level;
+      const cur = muscleBest[muscleName];
+      if (cur && score <= cur.score) continue;
+      muscleBest[muscleName] = {
+        exercise: ex.name,
+        weight: w,
+        reps: r,
+        sets: s,
+        date: row.date,
+        score,
+        level: levelFromScore(score, std),
+      };
+      muscleLevels[muscleName] = muscleBest[muscleName]!.level;
+    }
   }
 
   // Zone color = average of TRAINED muscles in the group (we ignore the

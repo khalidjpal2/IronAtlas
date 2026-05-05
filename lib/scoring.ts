@@ -140,42 +140,138 @@ export function computeAtlasScore(
 }
 
 // ──────────────────────────────────────────────────────────────────
-// JOURNEY — step consistency
+// JOURNEY — tiered step scoring
 // ──────────────────────────────────────────────────────────────────
+//
+// Two goals: a fixed BASE GOAL (10,000) and a per-user PERSONAL GOAL
+// (anything > base). Each LOGGED day contributes points; unlogged
+// days are skipped entirely (vacations don't punish you). Hitting the
+// personal goal multiplies the day's score by 1.5x and contributes
+// to a streak bonus that ramps +1/day (cap +10/day, resets on a
+// logged miss).
 
 export type StepDay = { date: string; steps: number };
 
+export const JOURNEY_BASE_GOAL = 10000;
+
+export type DailyJourneyPoints = {
+  steps: number;
+  basePoints: number;        // -10..+10 from the steps-vs-base tier
+  bonusFromAbove: number;    // points for steps above base
+  multiplier: 1 | 1.5;       // 1.5x when personal goal met
+  total: number;             // (basePoints + bonusFromAbove) * multiplier
+  baseGoalMet: boolean;
+  personalGoalMet: boolean;
+};
+
 /**
- * stepsByDate maps "YYYY-MM-DD" → steps for that day. Days not present
- * in the map are treated as 0 (didn't log).
+ * Score one day's step count under the tiered system.
+ * Negative tiers (below base) do not get the multiplier — the
+ * multiplier only fires when the personal goal is actually hit.
+ */
+export function computeDailyJourneyPoints(
+  steps: number,
+  personalGoal: number,
+  baseGoal: number = JOURNEY_BASE_GOAL
+): DailyJourneyPoints {
+  let basePoints = 0;
+  let bonusFromAbove = 0;
+  let multiplier: 1 | 1.5 = 1;
+
+  if (steps < baseGoal) {
+    if (steps === 0) basePoints = -10;
+    else if (steps < 5000) basePoints = -7;
+    else if (steps < 7500) basePoints = -5;
+    else basePoints = -2;
+  } else {
+    basePoints = 10;
+    const above = steps - baseGoal;
+    bonusFromAbove =
+      Math.floor(above / 1000) + Math.floor(above / 5000) * 5;
+    if (steps >= personalGoal) multiplier = 1.5;
+  }
+
+  const total = (basePoints + bonusFromAbove) * multiplier;
+  return {
+    steps,
+    basePoints,
+    bonusFromAbove,
+    multiplier,
+    total,
+    baseGoalMet: steps >= baseGoal,
+    personalGoalMet: steps >= personalGoal,
+  };
+}
+
+/**
+ * 0..100 Journey score over the last 30 LOGGED days.
+ * Normalized so 30 consecutive days exactly at the personal goal = 100.
+ * Uses a 60-day lookback to seed the streak counter, so a user already
+ * on a long run gets the full +10/day from day one of the window.
  */
 export function computeJourneyScore(
+  stepsByDate: Map<string, number>,
+  personalGoal: number,
+  todayISO: string,
+  baseGoal: number = JOURNEY_BASE_GOAL
+): number {
+  const window60 = lastNDates(todayISO, 60);
+  const inLast30 = new Set(lastNDates(todayISO, 30));
+
+  let streak = 0;
+  let total = 0;
+
+  for (const iso of window60) {
+    if (!stepsByDate.has(iso)) continue; // unlogged → skip
+    const day = computeDailyJourneyPoints(
+      stepsByDate.get(iso) ?? 0,
+      personalGoal,
+      baseGoal
+    );
+
+    let streakBonus = 0;
+    if (day.personalGoalMet) {
+      streak += 1;
+      streakBonus = Math.min(streak, 10);
+    } else {
+      streak = 0;
+    }
+
+    if (inLast30.has(iso)) {
+      total += day.total + streakBonus;
+    }
+  }
+
+  const dailyAtPersonal = computeDailyJourneyPoints(
+    personalGoal,
+    personalGoal,
+    baseGoal
+  ).total;
+  const denom = Math.max(1, dailyAtPersonal * 30);
+  return clamp((total / denom) * 100);
+}
+
+/**
+ * Current streak of consecutive logged days hitting `goal`, ending
+ * today. Unlogged days don't break the streak (consistent with the
+ * scoring rules), but a logged day below the goal does.
+ */
+export function currentStepStreak(
   stepsByDate: Map<string, number>,
   goal: number,
   todayISO: string
 ): number {
-  const last30 = lastNDates(todayISO, 30);
-  let met = 0;
-  for (const d of last30) {
-    if ((stepsByDate.get(d) ?? 0) >= goal) met += 1;
+  let streak = 0;
+  const end = new Date(todayISO + "T00:00:00");
+  for (let i = 0; i < 365; i++) {
+    const d = new Date(end);
+    d.setDate(end.getDate() - i);
+    const iso = d.toISOString().slice(0, 10);
+    if (!stepsByDate.has(iso)) continue;
+    if ((stepsByDate.get(iso) ?? 0) >= goal) streak += 1;
+    else break;
   }
-  let score = (met / 30) * 100; // base 0..100
-
-  // Streak bonus — current run of goal-met days ending today.
-  const streak = currentStreak(stepsByDate, goal, todayISO);
-  if (streak >= 30) score += 20;
-  else if (streak >= 14) score += 10;
-  else if (streak >= 7) score += 5;
-
-  // Decay — days since the last day with ANY logged steps (>0).
-  const idleDays = daysSinceLastNonzero(stepsByDate, todayISO);
-  if (idleDays != null) {
-    if (idleDays >= 14) score -= 30;
-    else if (idleDays >= 7) score -= 15;
-    else if (idleDays >= 3) score -= 5;
-  }
-
-  return clamp(score);
+  return streak;
 }
 
 // ──────────────────────────────────────────────────────────────────
@@ -359,37 +455,6 @@ function lastNDates(todayISO: string, n: number): string[] {
     out.push(d.toISOString().slice(0, 10));
   }
   return out;
-}
-
-function currentStreak(
-  byDate: Map<string, number>,
-  goal: number,
-  todayISO: string
-): number {
-  let streak = 0;
-  const end = new Date(todayISO + "T00:00:00");
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(end);
-    d.setDate(end.getDate() - i);
-    const iso = d.toISOString().slice(0, 10);
-    if ((byDate.get(iso) ?? 0) >= goal) streak += 1;
-    else break;
-  }
-  return streak;
-}
-
-function daysSinceLastNonzero(
-  byDate: Map<string, number>,
-  todayISO: string
-): number | null {
-  const end = new Date(todayISO + "T00:00:00");
-  for (let i = 0; i < 365; i++) {
-    const d = new Date(end);
-    d.setDate(end.getDate() - i);
-    const iso = d.toISOString().slice(0, 10);
-    if ((byDate.get(iso) ?? 0) > 0) return i;
-  }
-  return null;
 }
 
 function daysSinceLastLog(

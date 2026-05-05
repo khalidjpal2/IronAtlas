@@ -36,7 +36,9 @@ with base(muscle_group, exercise_name, zone, b, a, ab, e, el) as (values
   -- Chest
   ('chest',      'Bench Press',                'upper',      135, 185, 235, 290, 350),
   ('chest',      'Incline Bench Press',        'upper',      115, 160, 210, 260, 315),
+  ('chest',      'Incline Press',              'upper',      115, 160, 210, 260, 315),
   ('chest',      'Decline Bench Press',        'upper',      145, 195, 245, 300, 360),
+  ('chest',      'Decline Press',              'upper',      145, 195, 245, 300, 360),
   ('chest',      'Machine Chest Press',        'upper',      130, 180, 230, 285, 345),
   ('chest',      'Pec Deck',                   'upper',       60,  95, 130, 170, 210),
   ('chest',      'Cable Fly',                  'upper',       50,  80, 115, 150, 185),
@@ -44,10 +46,19 @@ with base(muscle_group, exercise_name, zone, b, a, ab, e, el) as (values
   -- Back
   ('back',       'Pull Up',                    'bodyweight',   0,  25,  60, 100, 145),
   ('back',       'Lat Pulldown',               'upper',      110, 145, 185, 230, 280),
+  ('back',       'Lat Pulldown (Machine)',     'upper',      110, 145, 185, 230, 280),
   ('back',       'Cable Row',                  'upper',      110, 145, 185, 230, 280),
+  ('back',       'Seated Machine Row',         'upper',      110, 145, 185, 230, 280),
   ('back',       'T-Bar Row',                  'upper',      100, 140, 180, 225, 275),
   ('back',       'Barbell Row',                'upper',       95, 145, 195, 245, 305),
   ('back',       'Face Pull',                  'upper',       40,  60,  90, 120, 150),
+  ('back',       'Chest Supported T-Bar Row',  'upper',       95, 135, 180, 230, 280),
+  ('back',       'Seated Chest Supported Row', 'upper',      100, 140, 180, 225, 275),
+  ('back',       'Seated Neutral Row',         'upper',      100, 140, 180, 225, 275),
+  ('back',       'Reverse Fly',                'upper',       15,  25,  40,  55,  75),
+  ('back',       'Shrugs',                     'upper',      135, 185, 245, 315, 405),
+  ('back',       'Prone Y-Raise',              'upper',        5,  10,  15,  25,  35),
+  ('back',       'Back Extension',             'lower',       25,  45,  70, 100, 135),
   ('back',       'Deadlift',                   'lower',      175, 275, 365, 450, 545),
   -- Shoulders
   ('shoulders',  'Lateral Raise',              'upper',       15,  25,  40,  55,  75),
@@ -68,6 +79,8 @@ with base(muscle_group, exercise_name, zone, b, a, ab, e, el) as (values
   ('triceps',    'Overhead Tricep Cable',      'upper',       40,  60,  85, 115, 145),
   ('triceps',    'Skull Crusher',              'upper',       50,  75, 100, 130, 160),
   ('triceps',    'Dumbbell Overhead Extension','upper',       40,  60,  85, 115, 145),
+  ('triceps',    'Cable Pushdown',             'upper',       50,  75, 105, 140, 175),
+  ('triceps',    'Overhead Cable Rope Extension', 'upper',    35,  55,  80, 110, 140),
   ('triceps',    'Close Grip Bench Press',     'upper',      115, 165, 215, 270, 325),
   ('triceps',    'Dips',                       'bodyweight',   0,  10,  25,  45,  70),
   -- Quads
@@ -78,6 +91,7 @@ with base(muscle_group, exercise_name, zone, b, a, ab, e, el) as (values
   ('quads',      'Bulgarian Split Squat',      'lower',       80, 130, 180, 230, 280),
   -- Hamstrings
   ('hamstrings', 'Hamstring Curl',             'lower',       75, 115, 155, 200, 245),
+  ('hamstrings', 'Seated Leg Curl',            'lower',       75, 115, 155, 200, 245),
   ('hamstrings', 'Romanian Deadlift',          'lower',      135, 205, 275, 350, 425),
   ('hamstrings', 'Good Morning',               'lower',       95, 145, 195, 245, 305),
   ('hamstrings', 'Nordic Curl',                'bodyweight',   3,   5,  10,  15,  20),
@@ -85,11 +99,18 @@ with base(muscle_group, exercise_name, zone, b, a, ab, e, el) as (values
   ('glutes',     'Hip Thrust',                 'lower',      185, 275, 360, 450, 545),
   ('glutes',     'Glute Bridge',               'lower',      135, 200, 265, 335, 405),
   ('glutes',     'Cable Kickback',             'lower',       30,  50,  70,  95, 120),
+  ('glutes',     'Clam Shell',                 'bodyweight',   0,   5,  10,  20,  35),
+  ('glutes',     'Side-Lying Hip Raise',       'bodyweight',   0,   5,  10,  20,  35),
   ('glutes',     'Abductor Machine',           'lower',       90, 135, 180, 230, 280),
+  ('glutes',     'Adductor Machine',           'lower',       90, 135, 180, 230, 280),
   -- Calves
   ('calves',     'Standing Calf Raise',        'lower',       95, 165, 225, 295, 365),
   ('calves',     'Seated Calf Raise',          'lower',       70, 110, 150, 200, 250),
   ('calves',     'Leg Press Calf Raise',       'lower',      180, 270, 360, 460, 565),
+  ('calves',     'Tibialis Raise',             'lower',       25,  45,  65,  90, 120),
+  -- Forearms
+  ('forearms',   'Wrist Curl',                 'upper',       30,  50,  75, 100, 130),
+  ('forearms',   'Reverse Curl',               'upper',       25,  45,  65,  90, 115),
   -- Abs
   ('abs',        'Ab Crunch Machine',          'upper',       80, 130, 180, 230, 290),
   ('abs',        'Plank',                      'endurance',   30,  60, 120, 240, 360),

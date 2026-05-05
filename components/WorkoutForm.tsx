@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
+import { todayPT } from "@/lib/time";
 import {
   EXERCISE_OPTIONS,
   exerciseZone,
@@ -153,6 +154,7 @@ export default function WorkoutForm({
         <input
           type="date"
           value={date}
+          max={todayPT()}
           onChange={(e) => setDate(e.target.value)}
           className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
         />

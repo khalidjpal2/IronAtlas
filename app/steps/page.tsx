@@ -6,6 +6,7 @@ import {
   createSupabaseServerClient,
 } from "@/lib/supabase-server";
 import { loadProfile } from "@/lib/profile";
+import { JOURNEY_BASE_GOAL } from "@/lib/scoring";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -24,12 +25,11 @@ export default async function StepsPage() {
   );
 
   const admin = createSupabaseAdminClient();
-  // last 60 days for monthly chart + streaks
   const sinceISO = new Date(Date.now() - 60 * 86400 * 1000)
     .toISOString()
     .slice(0, 10);
 
-  const [{ data: stepsRows }, { data: goalRow }] = await Promise.all([
+  const [{ data: stepsRows }, goalRowRes] = await Promise.all([
     admin
       .from("daily_steps")
       .select("date, steps, goal")
@@ -38,10 +38,24 @@ export default async function StepsPage() {
       .order("date", { ascending: true }),
     admin
       .from("step_goals")
-      .select("daily_goal")
+      .select("daily_goal, personal_goal")
       .eq("user_id", user.id)
       .maybeSingle(),
   ]);
+
+  // Fallback if personal_goal column hasn't been migrated yet.
+  let goalRow: any = goalRowRes.data;
+  if (goalRowRes.error) {
+    const legacy = await admin
+      .from("step_goals")
+      .select("daily_goal")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    goalRow = legacy.data;
+  }
+  const personalGoal = Number(
+    goalRow?.personal_goal ?? goalRow?.daily_goal ?? 20000
+  );
 
   return (
     <StepsClient
@@ -55,11 +69,12 @@ export default async function StepsPage() {
         ageGroup: profile.ageGroup,
         experience: profile.experience,
       }}
-      goal={Number(goalRow?.daily_goal ?? 10000)}
+      baseGoal={JOURNEY_BASE_GOAL}
+      personalGoal={personalGoal}
       rows={(stepsRows ?? []).map((r: any) => ({
         date: r.date,
         steps: Number(r.steps ?? 0),
-        goal: Number(r.goal ?? 10000),
+        goal: Number(r.goal ?? JOURNEY_BASE_GOAL),
       }))}
     />
   );

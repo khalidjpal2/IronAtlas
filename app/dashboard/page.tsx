@@ -10,10 +10,14 @@ import {
   EXERCISE_OPTIONS,
   ZONES,
   computeLevels,
+  effectiveStrength,
+  exerciseZone,
+  levelFromScore,
   selectStandards,
   type BigThree,
   type SetRow,
   type StandardRow,
+  type StrengthLevel,
   type Zone,
 } from "@/lib/strength";
 import type { PR } from "@/components/PRCards";
@@ -23,22 +27,37 @@ import {
   computeAtlasScore,
   computeJourneyScore,
   computeSustenanceScore,
+  currentStepStreak,
   daysSinceLastTrainedByZone,
+  JOURNEY_BASE_GOAL,
   type NutritionDay,
   type NutritionMode,
 } from "@/lib/scoring";
 import {
   evaluateQuest,
   getDailyQuests,
+  todayScheduleEntry,
   type QuestEvalSnapshot,
+  type ScheduleDay,
   type WorkoutGoalChoice,
 } from "@/lib/quests";
 import { evaluateBadges } from "@/lib/badges";
 import { ptDateNDaysAgo, todayPT } from "@/lib/time";
 
 export type MuscleBest =
-  | { exercise: string; weight: number; reps: number; sets: number; score: number }
+  | { exercise: string; weight: number; reps: number; sets: number; date?: string; score: number }
   | null;
+
+export type EnrichedSet = {
+  exercise: string;
+  zone: string;
+  weight: number;
+  reps: number;
+  sets: number;
+  date: string;
+  score: number;
+  level: StrengthLevel;
+};
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -72,13 +91,14 @@ export default async function DashboardPage() {
     { data: setsRows },
     { data: prRows },
     { data: stepsToday },
-    { data: stepGoalRow },
+    stepGoalRowRes,
     { data: nutritionToday },
     nutritionGoalsRes,
     { data: stepsLast60 },
     { data: nutritionLast60 },
     earnedBadgesRes,
     todayQuestRes,
+    scheduleRes,
   ] = await Promise.all([
     admin.from("strength_standards").select("*"),
     admin
@@ -99,7 +119,7 @@ export default async function DashboardPage() {
       .maybeSingle(),
     admin
       .from("step_goals")
-      .select("daily_goal")
+      .select("daily_goal, personal_goal")
       .eq("user_id", user.id)
       .maybeSingle(),
     admin
@@ -139,6 +159,12 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .eq("date", todayISO)
       .maybeSingle(),
+    // Per-user weekly workout schedule. May not exist if the
+    // migration hasn't run; we fall back to an empty array.
+    admin
+      .from("workout_schedule")
+      .select("day_of_week, is_rest, workout_type")
+      .eq("user_id", user.id),
   ]);
 
   // If the nutrition_goals query failed because `mode` doesn't exist
@@ -151,6 +177,18 @@ export default async function DashboardPage() {
       .eq("user_id", user.id)
       .maybeSingle();
     nutritionGoalsRow = legacy.data;
+  }
+
+  // Same pattern for step_goals.personal_goal — column may not yet
+  // exist if the migration hasn't been run.
+  let stepGoalRow: any = stepGoalRowRes.data;
+  if (stepGoalRowRes.error) {
+    const legacy = await admin
+      .from("step_goals")
+      .select("daily_goal")
+      .eq("user_id", user.id)
+      .maybeSingle();
+    stepGoalRow = legacy.data;
   }
 
   const standards: StandardRow[] = selectStandards(
@@ -213,9 +251,19 @@ export default async function DashboardPage() {
     lastWorkoutZone,
   };
 
-  const stepGoal = Number(
-    stepsToday?.goal ?? stepGoalRow?.daily_goal ?? 10000
+  // Tiered Journey: base is fixed at 10,000; personal goal is whatever
+  // the user has set (defaults to 20,000). Fall back to the legacy
+  // daily_goal if the personal_goal column hasn't been migrated yet.
+  const personalGoal = Number(
+    stepGoalRow?.personal_goal ??
+      stepGoalRow?.daily_goal ??
+      stepsToday?.goal ??
+      20000
   );
+  const baseGoal = JOURNEY_BASE_GOAL;
+  // Most consumers (today's progress, quests, badges) want the
+  // user's target — keep `stepGoal` aliased to personal goal.
+  const stepGoal = personalGoal;
   const stepsOverview = {
     today: Number(stepsToday?.steps ?? 0),
     goal: stepGoal,
@@ -314,44 +362,19 @@ export default async function DashboardPage() {
   });
   const todaySteps = stepsByDate.get(todayISO) ?? 0;
 
-  // Nuclear-level diagnostics for the journey score path. Print BEFORE
-  // computing so we see the exact inputs even if the function throws.
-  console.log(
-    "[JOURNEY SCORE] steps data:",
-    JSON.stringify(
-      (stepsLast60 ?? []).slice(0, 3).map((r: any) => ({
-        date: r.date,
-        steps: r.steps,
-      }))
-    ),
-    "rowsTotal:",
-    (stepsLast60 ?? []).length,
-    "goal:",
-    stepGoal,
-    "todayISO:",
-    todayISO
+  const journeyScore = computeJourneyScore(
+    stepsByDate,
+    personalGoal,
+    todayISO,
+    baseGoal
   );
-
-  const journeyScore = computeJourneyScore(stepsByDate, stepGoal, todayISO);
 
   console.log(
     `[journey-score] user=${user.id} today=${todayISO} ` +
-      `stepsLast60Rows=${(stepsLast60 ?? []).length} ` +
-      `mapSize=${stepsByDate.size} todaySteps=${todaySteps} ` +
-      `goal=${stepGoal} score=${journeyScore}`
+      `rows=${(stepsLast60 ?? []).length} mapSize=${stepsByDate.size} ` +
+      `todaySteps=${todaySteps} base=${baseGoal} personal=${personalGoal} ` +
+      `score=${journeyScore}`
   );
-
-  if ((stepsLast60 ?? []).length === 0) {
-    console.warn(
-      "[journey-score] daily_steps query returned ZERO rows. " +
-        `Filter was: user_id=${user.id} AND date >= ${sixtyDaysAgoISO}. ` +
-        "Confirm the /api/steps writes are using the same user.id."
-    );
-  } else if (stepsByDate.size === 0) {
-    console.warn(
-      "[journey-score] rows fetched but byDate map is empty — date column may be coming back as a non-string?"
-    );
-  }
 
   const nutritionByDate = new Map<string, NutritionDay>();
   (nutritionLast60 ?? []).forEach((r: any) => {
@@ -375,26 +398,29 @@ export default async function DashboardPage() {
     (r: any) => String(r.workouts?.date) === todayISO
   );
 
-  // Current step streak ending today (used by lib/badges).
-  function currentStepStreak(): number {
-    let s = 0;
-    const end = new Date(todayISO + "T00:00:00");
-    for (let i = 0; i < 365; i++) {
-      const d = new Date(end);
-      d.setDate(end.getDate() - i);
-      const iso = d.toISOString().slice(0, 10);
-      if ((stepsByDate.get(iso) ?? 0) >= stepGoal) s += 1;
-      else break;
-    }
-    return s;
-  }
+  // Badge streaks (week_warrior / month_march) are pegged to the base
+  // goal of 10k, not the user's harder personal goal.
+  const baseStepStreak = currentStepStreak(stepsByDate, baseGoal, todayISO);
 
   const workoutGoal: WorkoutGoalChoice = profile.workoutGoal;
+  const scheduleRows: ScheduleDay[] = (scheduleRes?.data ?? []).map(
+    (r: any) => ({
+      day_of_week: Number(r.day_of_week),
+      is_rest: !!r.is_rest,
+      workout_type: r.workout_type ?? null,
+    })
+  );
+  const todayDow = new Date(todayISO + "T12:00:00Z").getUTCDay();
+  const todaySchedule = todayScheduleEntry(scheduleRows, todayDow);
+  // Journey quest is gated by the BASE goal (10k), not the user's
+  // harder personal goal — per spec: "Auto checks today's steps vs
+  // base goal (10,000) · Shows: X,XXX / 10,000 steps".
   const dailyQuests = getDailyQuests({
-    stepGoal,
+    stepGoal: baseGoal,
     calorieGoal: nutritionGoals.calories,
     mode: nutritionMode,
     workoutGoal,
+    todaySchedule,
   });
   const questSnapshot: QuestEvalSnapshot = {
     todayISO,
@@ -402,9 +428,10 @@ export default async function DashboardPage() {
     mode: nutritionMode,
     todaySetsCount: todaySetsList.length,
     todaySteps: stepsOverview.today,
-    stepGoal,
+    stepGoal: baseGoal,
     todayCalories: nutritionOverview.today?.calories ?? 0,
     goalCalories: nutritionGoals.calories,
+    todaySchedule,
   };
   const atlasDone = evaluateQuest(dailyQuests.atlas.id, questSnapshot);
   const journeyDone = evaluateQuest(dailyQuests.journey.id, questSnapshot);
@@ -490,7 +517,7 @@ export default async function DashboardPage() {
       (prRows ?? []).map((r: any) => String(r.lift_name ?? ""))
     ).size,
     bestStepDay,
-    stepStreak: currentStepStreak(),
+    stepStreak: baseStepStreak,
     totalNutritionDays,
     nutritionStreak: currentNutritionStreak(),
     hitAllMacrosToday,
@@ -544,6 +571,35 @@ export default async function DashboardPage() {
     hasStandard: stdNames.has(r.exercise_name),
   }));
 
+  // Heatmap-compute diagnostic. Mirrors the shape requested in the
+  // bug report — adapted to the actual data model (this codebase has
+  // no MUSCLE_BY_EXERCISE map; the equivalent check is whether the
+  // exercise name resolves in EXERCISE_OPTIONS *and* has a standards
+  // row). A set only contributes to the heatmap if both are true.
+  const mappedSets = setAudit.filter(
+    (s) => s.inExerciseOptions && s.hasStandard
+  );
+  const unmappedExercises = Array.from(
+    new Set(
+      setAudit
+        .filter((s) => !s.inExerciseOptions || !s.hasStandard)
+        .map((s) => s.exercise)
+    )
+  );
+  console.log("[Heatmap compute]", {
+    totalSets: sets.length,
+    mappedSets: mappedSets.length,
+    unmappedExercises,
+  });
+  if (unmappedExercises.length > 0) {
+    console.warn(
+      `[atlas] ${unmappedExercises.length} exercise name(s) won't update the heatmap: ${unmappedExercises.join(
+        ", "
+      )}. Most common cause: the strength_standards row hasn't been ` +
+        "inserted yet — run supabase/migrations/_run_all.sql to backfill."
+    );
+  }
+
   const debug = {
     setsCount: sets.length,
     standardsCount: standards.length,
@@ -575,10 +631,46 @@ export default async function DashboardPage() {
           weight: b.weight,
           reps: b.reps,
           sets: b.sets,
+          date: b.date,
           score: b.score,
         }
       : null;
   });
+
+  // Per-set enriched history powering the muscle detail panel's
+  // "All exercises logged" table. Score per set is raw effective
+  // strength * age adjustment (no per-muscle multiplier — this is
+  // the score the set gets graded against the exercise's standard).
+  const ageAdjFactor =
+    ({ "18-25": 1.0, "26-35": 1.0, "36-45": 1.08, "46+": 1.2 } as Record<
+      string,
+      number
+    >)[profile.ageGroup] ?? 1.0;
+  const exByName = new Map(EXERCISE_OPTIONS.map((e) => [e.name, e]));
+  const stdMap = new Map(standards.map((s) => [s.exercise_name, s]));
+  const bw = profile.bodyweight && profile.bodyweight > 0
+    ? profile.bodyweight
+    : 175;
+  const enrichedSets: EnrichedSet[] = [];
+  for (const r of (setsRows ?? []) as any[]) {
+    const ex = exByName.get(String(r.exercise_name ?? ""));
+    const std = stdMap.get(String(r.exercise_name ?? ""));
+    const w = Number(r.weight_lbs ?? 0);
+    const reps = Number(r.reps ?? 0);
+    const ssets = Number(r.sets ?? 0);
+    if (!ex || !std || w <= 0 || reps <= 0 || ssets <= 0) continue;
+    const score = effectiveStrength(w, reps, ssets, bw) * ageAdjFactor;
+    enrichedSets.push({
+      exercise: ex.name,
+      zone: exerciseZone(ex),
+      weight: w,
+      reps,
+      sets: ssets,
+      date: String(r.workouts?.date ?? ""),
+      score,
+      level: levelFromScore(score, std),
+    });
+  }
 
   const prs: PR[] = (prRows ?? []).map((r: any) => ({
     lift: r.lift_name as BigThree,
@@ -599,23 +691,15 @@ export default async function DashboardPage() {
     };
   }
 
-  // Final verification: this is what the rank card receives.
-  console.log(
-    "[ATLAS] journeyScore:",
-    journeyScore,
-    "stepsRows:",
-    (stepsLast60 ?? []).length,
-    "stepGoal:",
-    stepGoal,
-    "scores:",
-    {
-      atlas: scores.atlas,
-      journey: scores.journey,
-      sustenance: scores.sustenance,
-      overall: scores.overall,
-      rank: scores.rank,
-    }
-  );
+  console.log("[ATLAS] scores:", {
+    atlas: scores.atlas,
+    journey: scores.journey,
+    sustenance: scores.sustenance,
+    overall: scores.overall,
+    rank: scores.rank,
+    base: baseGoal,
+    personal: personalGoal,
+  });
 
   return (
     <Dashboard
@@ -641,13 +725,47 @@ export default async function DashboardPage() {
       scores={scores}
       zoneDecay={zoneDecayFlat}
       dailyQuests={{
-        atlas: { id: dailyQuests.atlas.id, text: dailyQuests.atlas.text, done: atlasDone },
-        journey: { id: dailyQuests.journey.id, text: dailyQuests.journey.text, done: journeyDone },
-        sustenance: { id: dailyQuests.sustenance.id, text: dailyQuests.sustenance.text, done: sustenanceDone },
+        atlas: {
+          id: dailyQuests.atlas.id,
+          text: dailyQuests.atlas.text,
+          done: atlasDone,
+          progress: {
+            current: todaySetsList.length,
+            label:
+              todaySchedule?.is_rest
+                ? "Rest day"
+                : `${todaySetsList.length} exercise${
+                    todaySetsList.length === 1 ? "" : "s"
+                  } today`,
+            isRestDay: !!todaySchedule?.is_rest,
+          },
+        },
+        journey: {
+          id: dailyQuests.journey.id,
+          text: dailyQuests.journey.text,
+          done: journeyDone,
+          progress: {
+            current: stepsOverview.today,
+            target: baseGoal,
+            label: `${stepsOverview.today.toLocaleString()} / ${baseGoal.toLocaleString()} steps`,
+          },
+        },
+        sustenance: {
+          id: dailyQuests.sustenance.id,
+          text: dailyQuests.sustenance.text,
+          done: sustenanceDone,
+          progress: {
+            current: nutritionOverview.today?.calories ?? 0,
+            target: nutritionGoals.calories,
+            label: `${(nutritionOverview.today?.calories ?? 0).toLocaleString()} / ${nutritionGoals.calories.toLocaleString()} cal`,
+            mode: nutritionMode,
+          },
+        },
         allDone: allQuestsDone,
       }}
       earnedBadges={Array.from(earnedBadgeIds)}
       newlyEarned={newlyEarned}
+      enrichedSets={enrichedSets}
     />
   );
 }

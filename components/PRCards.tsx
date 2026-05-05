@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { todayPT } from "@/lib/time";
+import { formatDate } from "@/lib/utils";
 import {
   BIG_THREE,
   BIG_THREE_EXERCISE,
@@ -376,6 +377,7 @@ function PRModal({
           <input
             type="date"
             value={date}
+            max={todayPT()}
             onChange={(e) => setDate(e.target.value)}
             className="w-full bg-bg border border-border rounded-md px-3 py-2 text-sm focus:outline-none focus:border-accent transition-colors"
           />
@@ -425,16 +427,3 @@ function BarbellIcon() {
   );
 }
 
-function formatDate(iso: string): string {
-  if (!iso) return "—";
-  try {
-    const d = new Date(iso + "T00:00:00");
-    return d.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
-  } catch {
-    return iso;
-  }
-}

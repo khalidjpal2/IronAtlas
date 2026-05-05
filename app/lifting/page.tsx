@@ -1,7 +1,10 @@
 import { redirect } from "next/navigation";
 import { unstable_noStore as noStore } from "next/cache";
 import LogWorkoutPage, {
+  type LastSetByExercise,
+  type RecentByExercise,
   type RecentSet,
+  type WorkoutPreset,
 } from "@/components/LogWorkoutPage";
 import {
   createSupabaseAdminClient,
@@ -67,13 +70,18 @@ export default async function LiftingPage({
           "id, workout_id, exercise_name, muscle_group, weight_lbs, reps, sets, workouts!inner(user_id, date)"
         )
         .eq("workouts.user_id", user.id),
+      // Recent sessions — ordered by workout_sets.created_at (own
+      // table) so a freshly-inserted row always lands at the top.
+      // Ordering by a foreign-table column (`workouts.created_at`)
+      // is unreliable in PostgREST; using the row's own timestamp
+      // makes the list update instantly after router.refresh().
       admin
         .from("workout_sets")
         .select(
-          "id, workout_id, exercise_name, muscle_group, weight_lbs, reps, sets, workouts!inner(user_id, date, created_at)"
+          "id, workout_id, exercise_name, muscle_group, weight_lbs, reps, sets, created_at, workouts!inner(user_id, date, notes)"
         )
         .eq("workouts.user_id", user.id)
-        .order("created_at", { foreignTable: "workouts", ascending: false })
+        .order("created_at", { ascending: false })
         .limit(5),
     ]);
 
@@ -107,13 +115,99 @@ export default async function LiftingPage({
   ) as Record<Zone, StrengthLevel>;
 
   const recentSets: RecentSet[] = (recentRows ?? []).map((r: any) => ({
-    workoutId: r.workout_id,
-    exercise: r.exercise_name,
+    setId: String(r.id ?? ""),
+    workoutId: String(r.workout_id ?? ""),
+    exercise: String(r.exercise_name ?? ""),
+    muscleGroup: String(r.muscle_group ?? ""),
     weight: Number(r.weight_lbs ?? 0),
     reps: Number(r.reps ?? 0),
     sets: Number(r.sets ?? 0),
     date: r.workouts?.date ?? "",
+    notes: r.workouts?.notes ?? null,
   }));
+
+  // ── Recent-by-exercise lookups (drive the "Last time: ..." chip
+  // and the small recent-logs strip in the Log Session modal).
+  // Derived from allSets, no extra query.
+  const allSetsSorted = (allSets ?? [])
+    .map((r: any) => ({
+      name: String(r.exercise_name ?? ""),
+      weight: Number(r.weight_lbs ?? 0),
+      reps: Number(r.reps ?? 0),
+      sets: Number(r.sets ?? 0),
+      date: String(r.workouts?.date ?? ""),
+    }))
+    .filter((r) => r.name && r.date)
+    .sort((a, b) => (a.date < b.date ? 1 : -1)); // newest first
+
+  const lastByExercise: LastSetByExercise = {};
+  const recentByExercise: RecentByExercise = {};
+  for (const r of allSetsSorted) {
+    if (!lastByExercise[r.name]) {
+      lastByExercise[r.name] = {
+        weight: r.weight,
+        reps: r.reps,
+        sets: r.sets,
+        date: r.date,
+      };
+    }
+    if (!recentByExercise[r.name]) recentByExercise[r.name] = [];
+    if (recentByExercise[r.name].length < 3) {
+      recentByExercise[r.name].push({
+        weight: r.weight,
+        reps: r.reps,
+        sets: r.sets,
+        date: r.date,
+      });
+    }
+  }
+
+  // ── Workout presets — table may not exist yet if the migration
+  // hasn't been applied; fall back to an empty list so the page still
+  // renders.
+  let presets: WorkoutPreset[] = [];
+  const presetRes = await admin
+    .from("workout_presets")
+    .select(
+      "id, name, created_at, preset_exercises(id, exercise_name, muscle_group, sort_order)"
+    )
+    .eq("user_id", user.id)
+    .order("created_at", { ascending: true });
+  if (!presetRes.error && Array.isArray(presetRes.data)) {
+    presets = presetRes.data.map((p: any) => ({
+      id: String(p.id),
+      name: String(p.name ?? ""),
+      exercises: (p.preset_exercises ?? [])
+        .slice()
+        .sort(
+          (a: any, b: any) =>
+            (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0)
+        )
+        .map((e: any) => ({
+          id: String(e.id),
+          exerciseName: String(e.exercise_name ?? ""),
+          muscleGroup: String(e.muscle_group ?? ""),
+        })),
+    }));
+  }
+
+  // ── Weekly workout schedule. May not exist if migration hasn't run.
+  let scheduleDays: Array<{
+    day_of_week: number;
+    is_rest: boolean;
+    workout_type: string | null;
+  }> = [];
+  const schedRes = await admin
+    .from("workout_schedule")
+    .select("day_of_week, is_rest, workout_type")
+    .eq("user_id", user.id);
+  if (!schedRes.error && Array.isArray(schedRes.data)) {
+    scheduleDays = schedRes.data.map((r: any) => ({
+      day_of_week: Number(r.day_of_week),
+      is_rest: !!r.is_rest,
+      workout_type: r.workout_type ?? null,
+    }));
+  }
 
   // Per-day workout sets for the calendar + day-detail modal. The raw
   // join already gives us everything we need; just shape it for the
@@ -216,6 +310,10 @@ export default async function LiftingPage({
       records={records}
       workoutDays={workoutDays}
       stats={liftingStats}
+      presets={presets}
+      lastByExercise={lastByExercise}
+      recentByExercise={recentByExercise}
+      scheduleDays={scheduleDays}
     />
   );
 }

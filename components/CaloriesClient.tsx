@@ -18,6 +18,7 @@ import MonthCalendar, { type CalendarCell } from "@/components/MonthCalendar";
 import FeastPlate from "@/components/FeastPlate";
 import { tooltipStyle, useChartPalette } from "@/lib/chartTheme";
 import { todayPT } from "@/lib/time";
+import { formatDate } from "@/lib/utils";
 
 export type NutritionRow = {
   date: string;
@@ -336,15 +337,26 @@ export default function CaloriesClient({
                 Lay the Feast
               </button>
               {todayRow && (
-                <button
-                  onClick={clearToday}
-                  disabled={busy === "clear"}
-                  className="text-[10px] uppercase tracking-[0.18em] text-muted hover:text-danger transition disabled:opacity-40"
-                  style={fontDisplay}
-                  title="Clear today's totals"
-                >
-                  {busy === "clear" ? "Clearing…" : "Reset Today"}
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => setSelectedDate(today())}
+                    className="text-[10px] uppercase tracking-[0.18em] text-muted hover:text-accent transition"
+                    style={fontDisplay}
+                    title="Edit today's totals"
+                  >
+                    Edit
+                  </button>
+                  <span className="text-muted/40">·</span>
+                  <button
+                    onClick={clearToday}
+                    disabled={busy === "clear"}
+                    className="text-[10px] uppercase tracking-[0.18em] text-muted hover:text-danger transition disabled:opacity-40"
+                    style={fontDisplay}
+                    title="Clear today's totals"
+                  >
+                    {busy === "clear" ? "Clearing…" : "Reset Today"}
+                  </button>
+                </div>
               )}
             </div>
           )}
@@ -489,6 +501,10 @@ export default function CaloriesClient({
           row={byDate.get(selectedDate) ?? null}
           goals={initialGoals}
           onClose={() => setSelectedDate(null)}
+          onSaved={() => {
+            setToast("Saved");
+            router.refresh();
+          }}
         />
       )}
 
@@ -1264,19 +1280,62 @@ function ProvisionsDayModal({
   row,
   goals,
   onClose,
+  onSaved,
 }: {
   date: string;
   row: NutritionRow | null;
   goals: Goals;
   onClose: () => void;
+  onSaved: () => void;
 }) {
+  const todayISO = todayPT();
+  const isFuture = date > todayISO;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(() => ({
+    calories: String(row?.calories ?? ""),
+    protein: String(row?.protein ?? ""),
+    carbs: String(row?.carbs ?? ""),
+    fat: String(row?.fat ?? ""),
+    notes: row?.notes ?? "",
+  }));
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape" && !saveBusy) onClose();
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, saveBusy]);
+
+  async function save() {
+    setSaveBusy(true);
+    setSaveErr(null);
+    try {
+      const res = await fetch("/api/nutrition", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          date,
+          calories: Number(draft.calories || 0),
+          protein_g: Number(draft.protein || 0),
+          carbs_g: Number(draft.carbs || 0),
+          fat_g: Number(draft.fat || 0),
+          notes: draft.notes.trim() || null,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      setEditing(false);
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      setSaveErr(e?.message ?? "Failed to save");
+    } finally {
+      setSaveBusy(false);
+    }
+  }
 
   const cals = row?.calories ?? 0;
   const goalCal = goals.calories || 1;
@@ -1297,12 +1356,7 @@ function ProvisionsDayModal({
       : status === "Under"
       ? "#3a5a8a"
       : "#5a5246";
-  const longLabel = new Date(date + "T00:00:00").toLocaleDateString(undefined, {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
+  const longLabel = formatDate(date);
 
   return (
     <div
@@ -1350,58 +1404,206 @@ function ProvisionsDayModal({
           </button>
         </div>
 
-        <div className="flex items-center gap-3">
-          <span
-            className="seal"
-            style={{ width: 12, height: 12, background: statusColor }}
-          />
-          <span
-            className="text-[12px] uppercase tracking-[0.22em] font-bold"
-            style={{
-              fontFamily: "var(--font-cinzel), Georgia, serif",
-              color: statusColor,
-            }}
-          >
-            {status}
-          </span>
-          {cals > 0 && (
-            <span className="text-[11px] text-muted ml-auto tabular-nums">
-              {cals.toLocaleString()} / {goalCal.toLocaleString()} cal
-            </span>
-          )}
-        </div>
+        {!editing && (
+          <>
+            <div className="flex items-center gap-3">
+              <span
+                className="seal"
+                style={{ width: 12, height: 12, background: statusColor }}
+              />
+              <span
+                className="text-[12px] uppercase tracking-[0.22em] font-bold"
+                style={{
+                  fontFamily: "var(--font-cinzel), Georgia, serif",
+                  color: statusColor,
+                }}
+              >
+                {status}
+              </span>
+              {cals > 0 && (
+                <span className="text-[11px] text-muted ml-auto tabular-nums">
+                  {cals.toLocaleString()} / {goalCal.toLocaleString()} cal
+                </span>
+              )}
+            </div>
 
-        <div className="grid grid-cols-3 gap-2.5">
-          <MacroBar
-            label="Protein"
-            value={row?.protein ?? 0}
-            goal={goals.protein}
-            color="#dc2626"
-          />
-          <MacroBar
-            label="Carbs"
-            value={row?.carbs ?? 0}
-            goal={goals.carbs}
-            color="#16a34a"
-          />
-          <MacroBar
-            label="Fat"
-            value={row?.fat ?? 0}
-            goal={goals.fat}
-            color="#d97706"
-          />
-        </div>
+            <div className="grid grid-cols-3 gap-2.5">
+              <MacroBar
+                label="Protein"
+                value={row?.protein ?? 0}
+                goal={goals.protein}
+                color="#dc2626"
+              />
+              <MacroBar
+                label="Carbs"
+                value={row?.carbs ?? 0}
+                goal={goals.carbs}
+                color="#16a34a"
+              />
+              <MacroBar
+                label="Fat"
+                value={row?.fat ?? 0}
+                goal={goals.fat}
+                color="#d97706"
+              />
+            </div>
 
-        {row?.notes && (
-          <div className="bg-elevated border border-bronze-deep rounded p-3 text-[11px] text-ink/90 leading-relaxed">
-            {row.notes}
-          </div>
+            {row?.notes && (
+              <div className="bg-elevated border border-bronze-deep rounded p-3 text-[11px] text-ink/90 leading-relaxed">
+                {row.notes}
+              </div>
+            )}
+
+            {!row && !isFuture && (
+              <p className="text-sm text-muted italic">
+                No provisions logged on this day.
+              </p>
+            )}
+            {isFuture && (
+              <p className="text-sm text-muted italic">
+                This day is in the future — log entries can only be added for
+                today or earlier.
+              </p>
+            )}
+
+            {!isFuture && (
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft({
+                    calories: String(row?.calories ?? ""),
+                    protein: String(row?.protein ?? ""),
+                    carbs: String(row?.carbs ?? ""),
+                    fat: String(row?.fat ?? ""),
+                    notes: row?.notes ?? "",
+                  });
+                  setEditing(true);
+                }}
+                className="btn-stone w-full"
+                style={{
+                  background: "linear-gradient(180deg, #7747b0, #3a2466)",
+                  borderColor: "#7747b0",
+                  color: "#f0e6ff",
+                }}
+              >
+                {row ? "Edit" : "Add nutrition for this day"}
+              </button>
+            )}
+          </>
         )}
 
-        {!row && (
-          <p className="text-sm text-muted italic">
-            No provisions logged on this day.
-          </p>
+        {editing && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label
+                  className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+                  style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+                >
+                  Calories
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.calories}
+                  onChange={(e) =>
+                    setDraft({ ...draft, calories: e.target.value })
+                  }
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label
+                  className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+                  style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+                >
+                  Protein (g)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.protein}
+                  onChange={(e) =>
+                    setDraft({ ...draft, protein: e.target.value })
+                  }
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label
+                  className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+                  style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+                >
+                  Carbs (g)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.carbs}
+                  onChange={(e) =>
+                    setDraft({ ...draft, carbs: e.target.value })
+                  }
+                  className="w-full"
+                />
+              </div>
+              <div>
+                <label
+                  className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+                  style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+                >
+                  Fat (g)
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  value={draft.fat}
+                  onChange={(e) => setDraft({ ...draft, fat: e.target.value })}
+                  className="w-full"
+                />
+              </div>
+            </div>
+            <div>
+              <label
+                className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+                style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+              >
+                Notes
+              </label>
+              <input
+                type="text"
+                value={draft.notes}
+                onChange={(e) =>
+                  setDraft({ ...draft, notes: e.target.value })
+                }
+                placeholder="optional"
+                className="w-full"
+              />
+            </div>
+            {saveErr && (
+              <p className="text-[11px] text-danger">{saveErr}</p>
+            )}
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                onClick={save}
+                disabled={saveBusy}
+                className="btn-stone flex-1"
+                style={{
+                  background: "linear-gradient(180deg, #7747b0, #3a2466)",
+                  borderColor: "#7747b0",
+                  color: "#f0e6ff",
+                }}
+              >
+                {saveBusy ? "Saving…" : "Save"}
+              </button>
+              <button
+                onClick={() => setEditing(false)}
+                disabled={saveBusy}
+                className="btn-stone btn-stone-ghost px-4"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </div>

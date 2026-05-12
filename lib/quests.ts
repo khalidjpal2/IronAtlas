@@ -58,6 +58,14 @@ export type ScheduleDay = {
   workout_type: WorkoutType | null;
 };
 
+/** A row from daily_schedule — per-date scheduling that overrides
+ *  the day-of-week template. */
+export type DailyScheduleEntry = {
+  date: string; // YYYY-MM-DD
+  is_rest: boolean;
+  workout_type: WorkoutType | null;
+};
+
 const WORKOUT_TYPE_LABEL: Record<WorkoutType, string> = {
   push: "Push Day",
   pull: "Pull Day",
@@ -79,6 +87,33 @@ export function todayScheduleEntry(
 ): ScheduleDay | null {
   if (!schedule) return null;
   return schedule.find((d) => d.day_of_week === todayDow) ?? null;
+}
+
+/**
+ * Resolve today's effective schedule, preferring a per-date override
+ * from daily_schedule over the day-of-week template.
+ *
+ *   1. If a row exists in `daily` for today's date → use it.
+ *   2. Otherwise → fall back to the matching `template` row (DOW).
+ *   3. Otherwise → null (caller treats as "no schedule").
+ */
+export function effectiveTodaySchedule(
+  daily: DailyScheduleEntry[] | null | undefined,
+  template: ScheduleDay[] | null | undefined,
+  todayISO: string,
+  todayDow: number
+): ScheduleDay | null {
+  if (daily) {
+    const hit = daily.find((d) => d.date === todayISO);
+    if (hit) {
+      return {
+        day_of_week: todayDow,
+        is_rest: !!hit.is_rest,
+        workout_type: hit.workout_type ?? null,
+      };
+    }
+  }
+  return todayScheduleEntry(template, todayDow);
 }
 
 /**

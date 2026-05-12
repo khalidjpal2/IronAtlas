@@ -56,12 +56,34 @@ export default async function CaloriesPage() {
   }
   const goalRow: any = goalsRes.data;
 
-  const { data: nutritionRows } = await admin
-    .from("daily_nutrition")
-    .select("date, calories, protein_g, carbs_g, fat_g, notes")
-    .eq("user_id", user.id)
-    .gte("date", sinceISO)
-    .order("date", { ascending: true });
+  // Pull nutrition + steps for the same 60-day window so the Energy
+  // Ledger can join them per-day (calories in vs. step-derived burn).
+  const [{ data: nutritionRows }, { data: stepsRows }] = await Promise.all([
+    admin
+      .from("daily_nutrition")
+      .select("date, calories, protein_g, carbs_g, fat_g, notes")
+      .eq("user_id", user.id)
+      .gte("date", sinceISO)
+      .order("date", { ascending: true }),
+    admin
+      .from("daily_steps")
+      .select("date, steps")
+      .eq("user_id", user.id)
+      .gte("date", sinceISO)
+      .order("date", { ascending: true }),
+  ]);
+
+  // Also count all-time steps + nutrition for the All-Time Ledger card.
+  const [{ data: allNutrition }, { data: allSteps }] = await Promise.all([
+    admin
+      .from("daily_nutrition")
+      .select("date, calories")
+      .eq("user_id", user.id),
+    admin
+      .from("daily_steps")
+      .select("date, steps")
+      .eq("user_id", user.id),
+  ]);
 
   const mode: NutritionMode =
     goalRow?.mode === "bulk" || goalRow?.mode === "cut" || goalRow?.mode === "maintain"
@@ -111,6 +133,18 @@ export default async function CaloriesPage() {
         carbs: Number(r.carbs_g ?? 0),
         fat: Number(r.fat_g ?? 0),
         notes: r.notes ?? null,
+      }))}
+      stepsRows={(stepsRows ?? []).map((r: any) => ({
+        date: String(r.date),
+        steps: Number(r.steps ?? 0),
+      }))}
+      allTimeNutrition={(allNutrition ?? []).map((r: any) => ({
+        date: String(r.date),
+        calories: Number(r.calories ?? 0),
+      }))}
+      allTimeSteps={(allSteps ?? []).map((r: any) => ({
+        date: String(r.date),
+        steps: Number(r.steps ?? 0),
       }))}
     />
   );

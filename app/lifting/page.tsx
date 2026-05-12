@@ -20,7 +20,7 @@ import {
   type StrengthLevel,
   type Zone,
 } from "@/lib/strength";
-import { ptDateNDaysAgo, todayPT } from "@/lib/time";
+import { addDaysISO, mondayOfWeekISO, ptDateNDaysAgo, todayPT } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -28,7 +28,7 @@ export const revalidate = 0;
 export default async function LiftingPage({
   searchParams,
 }: {
-  searchParams: { zone?: string; exercise?: string };
+  searchParams: { zone?: string; exercise?: string; date?: string };
 }) {
   noStore();
 
@@ -88,7 +88,8 @@ export default async function LiftingPage({
   const standards: StandardRow[] = selectStandards(
     (allStandards ?? []) as StandardRow[],
     profile.ageGroup,
-    profile.sex ?? "male"
+    profile.sex ?? "male",
+    profile.bodyweight ?? null
   );
 
   const sets: SetRow[] = (allSets ?? []).map((r: any) => ({
@@ -191,22 +192,92 @@ export default async function LiftingPage({
     }));
   }
 
-  // ── Weekly workout schedule. May not exist if migration hasn't run.
+  // ── Weekly workout schedule (current week, week_offset=0). Falls
+  // back gracefully when the preset_id and/or week_offset migrations
+  // haven't been applied yet.
   let scheduleDays: Array<{
     day_of_week: number;
     is_rest: boolean;
     workout_type: string | null;
+    preset_id: string | null;
   }> = [];
-  const schedRes = await admin
-    .from("workout_schedule")
-    .select("day_of_week, is_rest, workout_type")
-    .eq("user_id", user.id);
-  if (!schedRes.error && Array.isArray(schedRes.data)) {
-    scheduleDays = schedRes.data.map((r: any) => ({
-      day_of_week: Number(r.day_of_week),
-      is_rest: !!r.is_rest,
-      workout_type: r.workout_type ?? null,
-    }));
+  {
+    // 1) modern: week_offset + preset_id
+    const modern = await admin
+      .from("workout_schedule")
+      .select("day_of_week, is_rest, workout_type, preset_id")
+      .eq("user_id", user.id)
+      .eq("week_offset", 0);
+    let rows: any[] | null = null;
+    if (!modern.error) {
+      rows = modern.data ?? [];
+    } else {
+      // 2) week_offset only (preset_id missing)
+      const noPreset = await admin
+        .from("workout_schedule")
+        .select("day_of_week, is_rest, workout_type")
+        .eq("user_id", user.id)
+        .eq("week_offset", 0);
+      if (!noPreset.error) {
+        rows = noPreset.data ?? [];
+      } else {
+        // 3) legacy (no week_offset column)
+        const legacy = await admin
+          .from("workout_schedule")
+          .select("day_of_week, is_rest, workout_type")
+          .eq("user_id", user.id);
+        if (!legacy.error) rows = legacy.data ?? [];
+      }
+    }
+    if (rows) {
+      scheduleDays = rows.map((r: any) => ({
+        day_of_week: Number(r.day_of_week),
+        is_rest: !!r.is_rest,
+        workout_type: r.workout_type ?? null,
+        preset_id: r.preset_id ?? null,
+      }));
+    }
+  }
+
+  // ── Date-keyed schedule for THIS WEEK (Mon-Sun).
+  // The new daily_schedule table stores per-date overrides. The
+  // template above remains as the fallback when no specific date is set.
+  // Degrade gracefully when the table doesn't exist yet (migration
+  // hasn't been run).
+  const weekStartISO = mondayOfWeekISO(todayPT());
+  const weekEndISO = addDaysISO(weekStartISO, 6);
+  let dailySchedule: Array<{
+    date: string;
+    is_rest: boolean;
+    workout_type: string | null;
+    preset_id: string | null;
+    notes: string | null;
+  }> = [];
+  let dailyScheduleTableMissing = false;
+  {
+    const res = await admin
+      .from("daily_schedule")
+      .select("date, is_rest, workout_type, preset_id, notes")
+      .eq("user_id", user.id)
+      .gte("date", weekStartISO)
+      .lte("date", weekEndISO);
+    if (res.error) {
+      const code = (res.error as any).code;
+      const msg = String(res.error.message ?? "");
+      if (code === "42P01" || /daily_schedule/i.test(msg)) {
+        dailyScheduleTableMissing = true;
+      } else {
+        console.warn("[lifting page] daily_schedule fetch error:", res.error);
+      }
+    } else {
+      dailySchedule = (res.data ?? []).map((r: any) => ({
+        date: String(r.date),
+        is_rest: !!r.is_rest,
+        workout_type: r.workout_type ?? null,
+        preset_id: r.preset_id ?? null,
+        notes: r.notes ?? null,
+      }));
+    }
   }
 
   // Per-day workout sets for the calendar + day-detail modal. The raw
@@ -238,6 +309,13 @@ export default async function LiftingPage({
     return ZONES.includes(z as Zone) ? (z as Zone) : null;
   })();
   const initialExercise = searchParams?.exercise ?? null;
+  // Pre-fill the form's date when the user clicks "Log Retroactively"
+  // on a past day. Validated as YYYY-MM-DD.
+  const initialDate =
+    typeof searchParams?.date === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(searchParams.date)
+      ? searchParams.date
+      : null;
 
   // === Lifting stats (this week / lifetime / streak) ===
   const todayISO = todayPT();
@@ -306,6 +384,7 @@ export default async function LiftingPage({
       zoneLevels={fullZoneLevels}
       initialZone={initialZone}
       initialExercise={initialExercise}
+      initialDate={initialDate}
       recentSets={recentSets}
       records={records}
       workoutDays={workoutDays}
@@ -314,6 +393,9 @@ export default async function LiftingPage({
       lastByExercise={lastByExercise}
       recentByExercise={recentByExercise}
       scheduleDays={scheduleDays}
+      initialDailySchedule={dailySchedule}
+      initialWeekStartISO={weekStartISO}
+      dailyScheduleTableMissing={dailyScheduleTableMissing}
     />
   );
 }

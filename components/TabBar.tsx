@@ -31,6 +31,11 @@ const BASE_TABS: Tab[] = [
     matches: (p) => p.startsWith("/calories"),
   },
   {
+    href: "/scales",
+    label: "Scales",
+    matches: (p) => p.startsWith("/scales"),
+  },
+  {
     href: "/history",
     label: "Battle Log",
     matches: (p) => p.startsWith("/history"),

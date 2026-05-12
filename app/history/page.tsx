@@ -40,7 +40,8 @@ export default async function HistoryPage() {
   const standards: StandardRow[] = selectStandards(
     (allStandards ?? []) as StandardRow[],
     profile.ageGroup,
-    profile.sex ?? "male"
+    profile.sex ?? "male",
+    profile.bodyweight ?? null
   );
 
   const rows: HistoryRow[] = (setsRows ?? []).map((r: any) => ({

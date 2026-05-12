@@ -1,6 +1,7 @@
 import {
   mergeWithDbOverrides,
   synthesizeStandardsFor,
+  synthesizeStandardsForBW,
 } from "./strength-standards";
 
 export type StrengthLevel =
@@ -11,49 +12,56 @@ export type StrengthLevel =
   | "exceptional"
   | "elite";
 
-// Diablo / Dark Souls organic palette — earthy, grounded.
-// Dormant   = cold stone
-// Awakened  = still water
-// Trained   = ancient wood
-// Powerful  = firelight
-// Mighty    = burnt ember
-// Legendary = twilight sky
+// Monochrome purple gradient — like an MRI/thermography scan. Each
+// tier uses the SAME hue progressively brighter and richer as the
+// muscle gets stronger. Untrained is a near-black slightly purple
+// tint (barely visible against the body); Elite is the brightest
+// most saturated purple. Glance the heatmap and the strongest muscles
+// stand out as the deepest, richest violet.
+//
+// Internal enum  →  Display tier   ·  Color
+//   untrained    →  Untrained      ·  #1a1520 (near-invisible)
+//   below        →  Beginner       ·  #2d1f3d (very faint)
+//   average      →  Novice         ·  #4a2d6e (soft muted)
+//   above        →  Intermediate   ·  #6b3fa0 (medium)
+//   exceptional  →  Advanced       ·  #8b52cc (rich)
+//   elite        →  Elite          ·  #a855f7 (deepest, brightest)
 export const LEVEL_COLOR: Record<StrengthLevel, string> = {
-  untrained: "#4a4a52",
-  below: "#3a5a8a",
-  average: "#3d6b3a",
-  above: "#b8860b",
-  exceptional: "#a0432a",
-  elite: "#5b3993",
+  untrained: "#1a1520",
+  below: "#2d1f3d",
+  average: "#4a2d6e",
+  above: "#6b3fa0",
+  exceptional: "#8b52cc",
+  elite: "#a855f7",
 };
 
 export const LEVEL_LABEL: Record<StrengthLevel, string> = {
-  untrained: "Dormant",
-  below: "Awakened",
-  average: "Trained",
-  above: "Powerful",
-  exceptional: "Mighty",
-  elite: "Legendary",
+  untrained: "Untrained",
+  below: "Beginner",
+  average: "Novice",
+  above: "Intermediate",
+  exceptional: "Advanced",
+  elite: "Elite",
 };
 
-// Subtle inner-aura color used for soft halos on higher tiers.
+// Subtle inner-aura — only the upper tiers glow, scaling with brightness.
 export const LEVEL_GLOW: Record<StrengthLevel, string> = {
-  untrained: "rgba(74, 74, 82, 0)",
-  below: "rgba(58, 90, 138, 0.22)",
-  average: "rgba(61, 107, 58, 0.22)",
-  above: "rgba(184, 134, 11, 0.28)",
-  exceptional: "rgba(160, 67, 42, 0.30)",
-  elite: "rgba(91, 57, 147, 0.35)",
+  untrained: "rgba(26, 21, 32, 0)",
+  below: "rgba(45, 31, 61, 0.18)",
+  average: "rgba(74, 45, 110, 0.24)",
+  above: "rgba(107, 63, 160, 0.30)",
+  exceptional: "rgba(139, 82, 204, 0.38)",
+  elite: "rgba(168, 85, 247, 0.50)",
 };
 
-// Per-tier XP bar gradient — amber for lower tiers, deep purple for higher.
+// Per-tier XP bar gradient — purple monochrome top-to-bottom for each tier.
 export const LEVEL_GRADIENT: Record<StrengthLevel, string> = {
-  untrained: "linear-gradient(180deg, #4a4a52 0%, #2a2a32 100%)",
-  below: "linear-gradient(180deg, #4a72a8 0%, #2a4060 100%)",
-  average: "linear-gradient(180deg, #4d7e4a 0%, #2a4828 100%)",
-  above: "linear-gradient(180deg, #d4a020 0%, #8a6308 100%)",
-  exceptional: "linear-gradient(180deg, #c25a3a 0%, #6e2810 100%)",
-  elite: "linear-gradient(180deg, #7747b0 0%, #3a2466 100%)",
+  untrained: "linear-gradient(180deg, #1a1520 0%, #0a060e 100%)",
+  below: "linear-gradient(180deg, #3d2a52 0%, #1d132a 100%)",
+  average: "linear-gradient(180deg, #5e3b8a 0%, #2e1c4a 100%)",
+  above: "linear-gradient(180deg, #7c4ab8 0%, #4a2880 100%)",
+  exceptional: "linear-gradient(180deg, #a86fe0 0%, #6133a8 100%)",
+  elite: "linear-gradient(180deg, #c084fc 0%, #7c3aed 100%)",
 };
 
 export const LEVEL_ORDER: StrengthLevel[] = [
@@ -560,9 +568,15 @@ export type StandardRow = {
 export function selectStandards(
   all: StandardRow[] | null | undefined,
   _ageGroup: string,
-  sex: string
+  sex: string,
+  bodyweight?: number | null
 ): StandardRow[] {
-  const codeRows = synthesizeStandardsFor("18-25", sex);
+  // Use the bodyweight-aware 5-tier synthesis when a weight is known;
+  // otherwise fall back to the legacy demographic-only baseline so
+  // logged-out / new users still see something meaningful.
+  const codeRows = bodyweight && bodyweight > 0
+    ? synthesizeStandardsForBW("18-25", sex, bodyweight)
+    : synthesizeStandardsFor("18-25", sex);
   return mergeWithDbOverrides(codeRows, all ?? [], "18-25", sex);
 }
 

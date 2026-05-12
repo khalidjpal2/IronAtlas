@@ -5,10 +5,17 @@ import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import MonthCalendar, { type CalendarCell } from "@/components/MonthCalendar";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
+import { getTierThresholdsLbs } from "@/lib/strength-standards";
+import {
+  HeatmapColorProvider,
+  useHeatmapPalette,
+} from "@/components/HeatmapColorContext";
 import { useTheme } from "@/lib/useTheme";
-import { todayPT } from "@/lib/time";
+import { addDaysISO, todayPT } from "@/lib/time";
 import { formatDate } from "@/lib/utils";
 import WorkoutPresets, {
+  StartSessionModal,
+  presetColor,
   type WorkoutPreset,
   type LastSetByExercise,
 } from "@/components/WorkoutPresets";
@@ -91,6 +98,7 @@ type Props = {
   zoneLevels: Record<Zone, StrengthLevel>;
   initialZone: Zone | null;
   initialExercise: string | null;
+  initialDate?: string | null;
   recentSets: RecentSet[];
   records: RecordEntry[];
   workoutDays: WorkoutDaySet[];
@@ -107,7 +115,20 @@ type Props = {
     day_of_week: number;
     is_rest: boolean;
     workout_type: string | null;
+    preset_id: string | null;
   }>;
+  /** Per-date overrides for the currently-rendered week. */
+  initialDailySchedule: Array<{
+    date: string;
+    is_rest: boolean;
+    workout_type: string | null;
+    preset_id: string | null;
+    notes: string | null;
+  }>;
+  /** Monday (YYYY-MM-DD) of the week pre-loaded on the server. */
+  initialWeekStartISO: string;
+  /** True when daily_schedule migration hasn't been applied yet. */
+  dailyScheduleTableMissing: boolean;
 };
 
 const todayISO = () => todayPT();
@@ -125,6 +146,7 @@ export default function LogWorkoutPage({
   zoneLevels,
   initialZone,
   initialExercise,
+  initialDate,
   recentSets,
   records,
   workoutDays,
@@ -133,6 +155,9 @@ export default function LogWorkoutPage({
   lastByExercise,
   recentByExercise,
   scheduleDays,
+  initialDailySchedule,
+  initialWeekStartISO,
+  dailyScheduleTableMissing,
 }: Props) {
   const router = useRouter();
   const supabase = createSupabaseBrowserClient();
@@ -140,7 +165,10 @@ export default function LogWorkoutPage({
 
   const [zone, setZone] = useState<Zone | "">(initialZone ?? "");
   const [exercise, setExercise] = useState<string>(initialExercise ?? "");
-  const [date, setDate] = useState<string>(todayISO);
+  const [date, setDate] = useState<string>(() => {
+    const t = todayISO();
+    return initialDate && initialDate <= t ? initialDate : t;
+  });
   const [weight, setWeight] = useState("");
   const [reps, setReps] = useState("");
   const [sets, setSets] = useState("");
@@ -152,6 +180,16 @@ export default function LogWorkoutPage({
   const [busyId, setBusyId] = useState<string | null>(null);
   const [calendarDate, setCalendarDate] = useState<string | null>(null);
   const [logOpen, setLogOpen] = useState(false);
+  const [calcOpen, setCalcOpen] = useState(false);
+  // Optional prefill for the log modal — used when "Log This Set" is
+  // clicked from the Strength Calculator.
+  const [logPrefill, setLogPrefill] = useState<{
+    zone: Zone;
+    exerciseName: string;
+    weight: string;
+    reps: string;
+    sets: string;
+  } | null>(null);
   const [editTarget, setEditTarget] = useState<{
     setId: string;
     workoutId: string;
@@ -388,6 +426,7 @@ export default function LogWorkoutPage({
     "w-full bg-elevated border border-border-bright rounded-md px-4 py-3 text-base text-ink focus:outline-none focus:border-accent transition appearance-none cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed pr-10";
 
   return (
+    <HeatmapColorProvider>
     <div className="min-h-screen flex flex-col bg-bg pb-24 md:pb-0">
       <AppHeader
         username={username}
@@ -418,21 +457,43 @@ export default function LogWorkoutPage({
               Choose a discipline. Log your session. Level up.
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setLogOpen(true)}
-            className="btn-stone shrink-0 px-5 rounded-full text-[11px]"
-            style={{ padding: "0.6rem 1.4rem" }}
-          >
-            Log Session +
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setCalcOpen(true)}
+              className="btn-stone btn-stone-ghost rounded-full text-[11px]"
+              style={{ padding: "0.6rem 1.2rem" }}
+            >
+              Calculator
+            </button>
+            <button
+              type="button"
+              onClick={() => setLogOpen(true)}
+              className="btn-stone px-5 rounded-full text-[11px]"
+              style={{ padding: "0.6rem 1.4rem" }}
+            >
+              Log Session +
+            </button>
+          </div>
         </header>
 
-        {/* === LIFTING STATS — sword/shield/anvil/flame === */}
-        <LiftingStatsRow stats={stats} />
-
         {/* === MY WEEK === */}
-        <WeeklySchedule initialDays={scheduleDays} />
+        <WeeklySchedule
+          userId={userId}
+          template={scheduleDays}
+          initialDaily={initialDailySchedule}
+          initialWeekStartISO={initialWeekStartISO}
+          tableMissing={dailyScheduleTableMissing}
+          presets={presets}
+          lastByExercise={lastByExercise}
+          zoneLevels={zoneLevels}
+          workoutDays={workoutDays}
+          onOpenLogForDate={(iso) => {
+            const t = todayISO();
+            setDate(iso > t ? t : iso);
+            setLogOpen(true);
+          }}
+        />
 
         {/* === MY PRESETS === */}
         <WorkoutPresets
@@ -651,36 +712,35 @@ export default function LogWorkoutPage({
 
       {/* Log session modal */}
       {logOpen && (
-        <LogSessionModal
-          inputCls={inputCls}
-          zone={zone}
-          setZone={setZone}
-          exercise={exercise}
-          setExercise={setExercise}
-          weight={weight}
-          setWeight={setWeight}
-          reps={reps}
-          setReps={setReps}
-          sets={sets}
-          setSets={setSets}
-          date={date}
-          setDate={setDate}
-          notes={notes}
-          setNotes={setNotes}
-          notesOpen={notesOpen}
-          setNotesOpen={setNotesOpen}
-          submitting={submitting}
-          showSuccess={showSuccess}
-          err={err}
-          canSubmit={canSubmit}
+        <MultiExerciseLogModal
+          userId={userId}
+          initialDate={date}
+          presets={presets}
           lastByExercise={lastByExercise}
-          recentByExercise={recentByExercise}
-          zoneLevels={zoneLevels}
-          onSubmit={onSubmit}
-          onClose={() => setLogOpen(false)}
+          initialExercise={logPrefill}
+          onClose={() => {
+            setLogOpen(false);
+            setLogPrefill(null);
+          }}
+          onSaved={() => router.refresh()}
+        />
+      )}
+
+      {calcOpen && (
+        <StrengthCalculatorModal
+          bodyweight={bodyweight}
+          sex={sex ?? "male"}
+          ageGroup={ageGroup ?? "18-25"}
+          onClose={() => setCalcOpen(false)}
+          onLogSet={(prefill) => {
+            setLogPrefill(prefill);
+            setCalcOpen(false);
+            setLogOpen(true);
+          }}
         />
       )}
     </div>
+    </HeatmapColorProvider>
   );
 }
 
@@ -702,27 +762,31 @@ const TORN_CLIP =
 // Tier palettes — selected at render time via the active theme so glow
 // filters can use real hex (CSS var concatenation like `${var}aa`
 // wouldn't be a valid color).
+// Discipline-banner per-tier palette — monochrome purple. Fabric is
+// the banner background; sigil is the rune/digit color; rune is the
+// glow halo. Each tier gets progressively richer purple, matching
+// the body heatmap.
 const TIER_THEME_DARK: Record<
   StrengthLevel,
   { fabric: string; sigil: string; rune: string; bright: boolean }
 > = {
-  untrained:   { fabric: "#1a1a1a", sigil: "#5a5246", rune: "rgba(90,82,70,0.35)",     bright: false },
-  below:       { fabric: "#0d1b2a", sigil: "#3a5a8a", rune: "rgba(58,90,138,0.45)",    bright: false },
-  average:     { fabric: "#0d1f0d", sigil: "#3d6b3a", rune: "rgba(61,107,58,0.45)",    bright: false },
-  above:       { fabric: "#1f1500", sigil: "#b8860b", rune: "rgba(184,134,11,0.55)",   bright: true  },
-  exceptional: { fabric: "#1f0800", sigil: "#a0432a", rune: "rgba(160,67,42,0.55)",    bright: true  },
-  elite:       { fabric: "#150020", sigil: "#a878d0", rune: "rgba(168,120,208,0.65)",  bright: true  },
+  untrained:   { fabric: "#100c16", sigil: "#3a3340", rune: "rgba(58,51,64,0.30)",     bright: false },
+  below:       { fabric: "#1a0f24", sigil: "#5a3f7c", rune: "rgba(90,63,124,0.40)",    bright: false },
+  average:     { fabric: "#1f1530", sigil: "#7a52a8", rune: "rgba(122,82,168,0.45)",   bright: false },
+  above:       { fabric: "#241a3d", sigil: "#9c6ed4", rune: "rgba(156,110,212,0.55)",  bright: true  },
+  exceptional: { fabric: "#291f4a", sigil: "#b87df0", rune: "rgba(184,125,240,0.60)",  bright: true  },
+  elite:       { fabric: "#2e2255", sigil: "#d4a5ff", rune: "rgba(212,165,255,0.70)",  bright: true  },
 };
 const TIER_THEME_LIGHT: Record<
   StrengthLevel,
   { fabric: string; sigil: string; rune: string; bright: boolean }
 > = {
-  untrained:   { fabric: "#e8dfd0", sigil: "#8a7f6b", rune: "rgba(138,127,107,0.4)",   bright: true },
-  below:       { fabric: "#b9c9d8", sigil: "#2c4870", rune: "rgba(44,72,112,0.45)",    bright: true },
-  average:     { fabric: "#b3c7a3", sigil: "#2a4628", rune: "rgba(42,70,40,0.45)",     bright: true },
-  above:       { fabric: "#e0c79c", sigil: "#8a6308", rune: "rgba(138,99,8,0.55)",     bright: true },
-  exceptional: { fabric: "#c87c5a", sigil: "#6e2810", rune: "rgba(110,40,16,0.55)",    bright: true },
-  elite:       { fabric: "#9b7ec9", sigil: "#4a3084", rune: "rgba(74,48,132,0.6)",     bright: true },
+  untrained:   { fabric: "#ece6f0", sigil: "#7a7080", rune: "rgba(122,112,128,0.40)",  bright: true },
+  below:       { fabric: "#d8c8e8", sigil: "#5a3f7c", rune: "rgba(90,63,124,0.50)",    bright: true },
+  average:     { fabric: "#c5b3dc", sigil: "#4a2d6e", rune: "rgba(74,45,110,0.55)",    bright: true },
+  above:       { fabric: "#b298d0", sigil: "#3d2156", rune: "rgba(61,33,86,0.60)",     bright: true },
+  exceptional: { fabric: "#a385c8", sigil: "#2f1745", rune: "rgba(47,23,69,0.65)",     bright: true },
+  elite:       { fabric: "#9572c2", sigil: "#260d36", rune: "rgba(38,13,54,0.70)",     bright: true },
 };
 
 const ROMAN: Record<number, string> = {
@@ -1244,126 +1308,6 @@ function Chevron() {
 }
 
 // formatShortDate removed in favour of the shared formatDate from lib/utils.
-
-// ─── Lifting stats — sword/shield/anvil/flame ─────────────────────
-function LiftingStatsRow({
-  stats,
-}: {
-  stats: {
-    workoutsThisWeek: number;
-    totalSets: number;
-    totalVolume: number;
-    streak: number;
-  };
-}) {
-  return (
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <WeaponStat
-        icon={<SwordIcon />}
-        label="Workouts · 7d"
-        value={String(stats.workoutsThisWeek)}
-      />
-      <WeaponStat
-        icon={<ShieldIcon />}
-        label="Total Sets"
-        value={stats.totalSets.toLocaleString()}
-      />
-      <WeaponStat
-        icon={<AnvilIcon />}
-        label="Total Volume"
-        value={`${stats.totalVolume.toLocaleString()} lb`}
-      />
-      <WeaponStat
-        icon={<FlameIcon />}
-        label="Streak"
-        value={`${stats.streak}d`}
-      />
-    </div>
-  );
-}
-
-function WeaponStat({
-  icon,
-  label,
-  value,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div
-      className="relative bg-panel border border-bronze-deep rounded p-3 flex items-center gap-3"
-      style={{
-        backgroundImage: "var(--noise-bg)",
-        // Slightly cut corners — angular dark-fantasy panel look.
-        clipPath:
-          "polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 10px 100%, 0 calc(100% - 10px))",
-        boxShadow:
-          "inset 0 1px 0 rgba(255,255,255,0.05), inset 0 -1px 0 rgba(0,0,0,0.5)",
-      }}
-    >
-      <div
-        className="w-9 h-9 flex items-center justify-center text-gold shrink-0"
-        style={{
-          filter: "drop-shadow(0 0 4px rgba(184,134,11,0.4))",
-        }}
-      >
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <div
-          className="text-[9px] uppercase tracking-[0.22em] text-muted leading-none"
-          style={fontDisplay}
-        >
-          {label}
-        </div>
-        <div
-          className="text-xl font-bold gold-text tabular-nums leading-tight mt-1"
-          style={fontDisplay}
-        >
-          {value}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SwordIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="w-7 h-7">
-      <path d="M14.5 17.5 L3 20l2.5-11.5 11.5 11.5z M14.5 17.5 L20 12 13 5 7 11" />
-      <path d="M5 19 L7 21" />
-    </svg>
-  );
-}
-function ShieldIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="w-7 h-7">
-      <path d="M12 3 L20 6 V12 C20 17 16 20 12 21 C8 20 4 17 4 12 V6 Z" />
-      <line x1="12" y1="8" x2="12" y2="17" />
-      <line x1="8" y1="11" x2="16" y2="11" />
-    </svg>
-  );
-}
-function AnvilIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="w-7 h-7">
-      <path d="M3 8 H21 L18 12 H6 Z" />
-      <path d="M9 12 V18 H15 V12" />
-      <path d="M7 18 H17" />
-      <path d="M5 21 H19" />
-    </svg>
-  );
-}
-function FlameIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="w-7 h-7">
-      <path d="M12 3 C13 6 17 8 16 13 C15 17 12 19 12 19 C12 19 9 17 8 13 C7 8 11 6 12 3 Z" />
-      <path d="M10 13 C11 14 13 14 14 13" />
-    </svg>
-  );
-}
 
 // ─── Records section ───────────────────────────────────────────────
 function RecordsSection({
@@ -2388,6 +2332,1705 @@ function SummaryStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+// ─── Strength Calculator modal ──────────────────────────────────
+// Live e1RM + tier ranking calculator. Pulls thresholds from
+// getTierThresholdsLbs at the user's bodyweight + sex, mirrors the
+// grading the dashboard heatmap actually uses.
+// Tier names + a fallback color (overridden at render time by the
+// active heatmap palette inside the calculator components).
+const TIER_NAMES: Array<{
+  key: "beg" | "nov" | "int" | "adv" | "el";
+  label: string;
+}> = [
+  { key: "beg", label: "Beginner" },
+  { key: "nov", label: "Novice" },
+  { key: "int", label: "Intermediate" },
+  { key: "adv", label: "Advanced" },
+  { key: "el", label: "Elite" },
+];
+
+// Lookup tier color from the live palette by index (0 = Beginner …
+// 4 = Elite). The internal enum names map: below/average/above/
+// exceptional/elite respectively.
+function tierColorFromPalette(
+  scale: Record<StrengthLevel, string>,
+  i: number
+): string {
+  const keys: StrengthLevel[] = [
+    "below",
+    "average",
+    "above",
+    "exceptional",
+    "elite",
+  ];
+  return scale[keys[i]] ?? scale.elite;
+}
+
+function epleyE1RM(weight: number, reps: number): number {
+  return weight * (1 + reps / 30);
+}
+
+function setVolumeMult(sets: number): number {
+  if (sets <= 1) return 1.0;
+  if (sets === 2) return 1.02;
+  if (sets === 3) return 1.04;
+  if (sets <= 5) return 1.06;
+  return 1.08;
+}
+
+type CalcResult = {
+  e1rm: number;
+  effective: number;
+  volMult: number;
+  thresholds: { beg: number; nov: number; int: number; adv: number; el: number };
+  tierIdx: number; // 0..4, -1 if below beginner
+  position: number; // 0..1 across the 5-segment bar
+  nextThreshold: number | null;
+  nextLabel: string | null;
+};
+
+function computeCalc(
+  exerciseName: string,
+  weight: number,
+  reps: number,
+  sets: number,
+  bodyweight: number | null | undefined,
+  sex: "male" | "female"
+): CalcResult | null {
+  if (!exerciseName || weight <= 0 || reps <= 0) return null;
+  const bw = bodyweight && bodyweight > 0 ? bodyweight : sex === "female" ? 140 : 175;
+  const thresholds = getTierThresholdsLbs(exerciseName, bw, sex);
+  if (!thresholds) return null;
+  const e1rm = epleyE1RM(weight, reps);
+  const volMult = setVolumeMult(Math.max(1, sets));
+  const effective = e1rm * volMult;
+  // Determine tier
+  let tierIdx = -1;
+  if (effective >= thresholds.el) tierIdx = 4;
+  else if (effective >= thresholds.adv) tierIdx = 3;
+  else if (effective >= thresholds.int) tierIdx = 2;
+  else if (effective >= thresholds.nov) tierIdx = 1;
+  else if (effective >= thresholds.beg) tierIdx = 0;
+
+  // Bar position across 5 equal segments.
+  const tiers = [thresholds.beg, thresholds.nov, thresholds.int, thresholds.adv, thresholds.el];
+  let position = 0;
+  if (tierIdx === -1) {
+    position = Math.max(0, (effective / thresholds.beg) * 0.1);
+  } else if (tierIdx === 4) {
+    // Beyond elite — clamp inside the elite segment with diminishing returns.
+    const overflow = (effective - thresholds.el) / Math.max(1, thresholds.el);
+    position = 0.8 + Math.min(0.18, overflow * 0.20);
+  } else {
+    const segStart = tierIdx / 5;
+    const segEnd = (tierIdx + 1) / 5;
+    const lo = tiers[tierIdx];
+    const hi = tiers[tierIdx + 1];
+    const within = hi > lo ? (effective - lo) / (hi - lo) : 0;
+    position = segStart + within * (segEnd - segStart);
+  }
+  position = Math.max(0, Math.min(1, position));
+
+  const nextIdx = tierIdx === -1 ? 0 : tierIdx + 1;
+  const nextThreshold =
+    nextIdx >= 5 ? null : tiers[nextIdx];
+  const nextLabel =
+    nextIdx >= 5 ? null : TIER_NAMES[nextIdx].label;
+
+  return {
+    e1rm,
+    effective,
+    volMult,
+    thresholds,
+    tierIdx,
+    position,
+    nextThreshold,
+    nextLabel,
+  };
+}
+
+// Suggest 3 weight × reps combos that produce a target e1RM.
+function suggestCombos(targetE1RM: number, currentWeight: number) {
+  const combos = [3, 5, 8].map((reps) => {
+    const weight = targetE1RM / (1 + reps / 30);
+    // Round to nearest 2.5 lb plate
+    const rounded = Math.round(weight / 2.5) * 2.5;
+    return { reps, weight: rounded };
+  });
+  return combos;
+}
+
+function StrengthCalculatorModal({
+  bodyweight,
+  sex,
+  ageGroup,
+  onClose,
+  onLogSet,
+}: {
+  bodyweight?: number | null;
+  sex: "male" | "female" | null;
+  ageGroup: string;
+  onClose: () => void;
+  onLogSet: (prefill: {
+    zone: Zone;
+    exerciseName: string;
+    weight: string;
+    reps: string;
+    sets: string;
+  }) => void;
+}) {
+  const sexNorm: "male" | "female" = sex === "female" ? "female" : "male";
+  const [zone, setZone] = useState<Zone | "">("");
+  const [exercise, setExercise] = useState<string>("");
+  const [weight, setWeight] = useState("");
+  const [reps, setReps] = useState("");
+  const [sets, setSets] = useState("1");
+  const [compareOpen, setCompareOpen] = useState(false);
+  const [weight2, setWeight2] = useState("");
+  const [reps2, setReps2] = useState("");
+  const [sets2, setSets2] = useState("1");
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const exerciseList = useMemo(
+    () => (zone ? exercisesForZone(zone) : []),
+    [zone]
+  );
+
+  const result = useMemo(
+    () =>
+      computeCalc(
+        exercise,
+        Number(weight),
+        Number(reps),
+        Number(sets),
+        bodyweight,
+        sexNorm
+      ),
+    [exercise, weight, reps, sets, bodyweight, sexNorm]
+  );
+
+  const result2 = useMemo(
+    () =>
+      compareOpen
+        ? computeCalc(
+            exercise,
+            Number(weight2),
+            Number(reps2),
+            Number(sets2),
+            bodyweight,
+            sexNorm
+          )
+        : null,
+    [compareOpen, exercise, weight2, reps2, sets2, bodyweight, sexNorm]
+  );
+
+  const bw = bodyweight && bodyweight > 0 ? bodyweight : sexNorm === "female" ? 140 : 175;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal
+      style={{ animation: "modalFadeIn 180ms ease-out" }}
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{
+          background: "rgba(2,2,8,0.80)",
+          backdropFilter: "blur(3px)",
+        }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="tablet relative rounded p-6 w-full"
+        style={{
+          maxWidth: 600,
+          maxHeight: "calc(100vh - 32px)",
+          overflowY: "auto",
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 64px rgba(0,0,0,0.7)",
+        }}
+      >
+        <span className="corner-bl" />
+        <span className="corner-br" />
+
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <div
+              className="text-[10px] uppercase tracking-[0.32em] text-gold/80"
+              style={fontDisplay}
+            >
+              Tools
+            </div>
+            <h2
+              className="text-2xl font-bold tracking-tight text-ink mt-1"
+              style={{
+                ...fontDisplay,
+                textShadow: "0 0 14px rgba(168,85,247,0.25)",
+              }}
+            >
+              Strength Calculator
+            </h2>
+            <p
+              className="text-[11px] mt-1"
+              style={{ ...fontDisplay, color: "rgba(216,210,194,0.65)" }}
+            >
+              Find out where your lift ranks.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Inputs */}
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1 font-bold"
+              style={fontDisplay}
+            >
+              Muscle Group
+            </label>
+            <select
+              value={zone}
+              onChange={(e) => {
+                setZone((e.target.value || "") as Zone | "");
+                setExercise("");
+              }}
+              className="w-full text-[12px]"
+              style={{ minHeight: 36 }}
+            >
+              <option value="">Pick a group</option>
+              {ZONES.map((z) => (
+                <option key={z} value={z}>
+                  {ZONE_LABEL[z]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1 font-bold"
+              style={fontDisplay}
+            >
+              Exercise
+            </label>
+            <select
+              value={exercise}
+              onChange={(e) => setExercise(e.target.value)}
+              disabled={!zone}
+              className="w-full text-[12px]"
+              style={{ minHeight: 36 }}
+            >
+              <option value="">Pick an exercise</option>
+              {exerciseList.map((ex) => (
+                <option key={ex.name} value={ex.name}>
+                  {ex.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Weight / Reps / Sets */}
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1 font-bold"
+              style={fontDisplay}
+            >
+              Weight (lbs)
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="0.5"
+              inputMode="decimal"
+              value={weight}
+              onChange={(e) => setWeight(e.target.value)}
+              className="w-full text-center tabular-nums text-[14px]"
+              style={{ minHeight: 40, fontWeight: 600 }}
+            />
+          </div>
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1 font-bold"
+              style={fontDisplay}
+            >
+              Reps
+            </label>
+            <input
+              type="number"
+              min="1"
+              inputMode="numeric"
+              value={reps}
+              onChange={(e) => setReps(e.target.value)}
+              className="w-full text-center tabular-nums text-[14px]"
+              style={{ minHeight: 40, fontWeight: 600 }}
+            />
+          </div>
+          <div>
+            <label
+              className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1 font-bold"
+              style={fontDisplay}
+            >
+              Sets
+            </label>
+            <input
+              type="number"
+              min="1"
+              inputMode="numeric"
+              value={sets}
+              onChange={(e) => setSets(e.target.value)}
+              className="w-full text-center tabular-nums text-[14px]"
+              style={{ minHeight: 40, fontWeight: 600 }}
+            />
+          </div>
+        </div>
+
+        {/* Live result */}
+        {result ? (
+          <CalcResultCard
+            exerciseName={exercise}
+            bodyweight={bw}
+            sex={sexNorm}
+            ageGroup={ageGroup}
+            weight={Number(weight)}
+            reps={Number(reps)}
+            sets={Number(sets) || 1}
+            result={result}
+          />
+        ) : (
+          <div
+            className="rounded p-5 text-center text-[12px] italic"
+            style={{
+              background: "rgba(20,14,30,0.55)",
+              border: "1px solid rgba(107,79,58,0.30)",
+              color: "rgba(216,210,194,0.55)",
+              ...fontDisplay,
+            }}
+          >
+            {!exercise
+              ? "Pick an exercise to see your rank."
+              : "Enter weight × reps to see your rank."}
+          </div>
+        )}
+
+        {/* Compare mode */}
+        <div className="mt-4">
+          <label
+            className="inline-flex items-center gap-2 text-[10px] uppercase tracking-[0.20em] text-muted hover:text-gold transition cursor-pointer"
+            style={fontDisplay}
+          >
+            <input
+              type="checkbox"
+              checked={compareOpen}
+              onChange={(e) => setCompareOpen(e.target.checked)}
+              className="accent-purple-500"
+            />
+            Compare with another set
+          </label>
+          {compareOpen && (
+            <div className="mt-3">
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                <input
+                  type="number"
+                  min="0"
+                  step="0.5"
+                  value={weight2}
+                  onChange={(e) => setWeight2(e.target.value)}
+                  placeholder="Weight"
+                  className="w-full text-center tabular-nums text-[14px]"
+                  style={{ minHeight: 40, fontWeight: 600 }}
+                />
+                <input
+                  type="number"
+                  min="1"
+                  value={reps2}
+                  onChange={(e) => setReps2(e.target.value)}
+                  placeholder="Reps"
+                  className="w-full text-center tabular-nums text-[14px]"
+                  style={{ minHeight: 40, fontWeight: 600 }}
+                />
+                <input
+                  type="number"
+                  min="1"
+                  value={sets2}
+                  onChange={(e) => setSets2(e.target.value)}
+                  placeholder="Sets"
+                  className="w-full text-center tabular-nums text-[14px]"
+                  style={{ minHeight: 40, fontWeight: 600 }}
+                />
+              </div>
+              {result2 && result && (
+                <CompareCard a={result} b={result2} />
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Log this set */}
+        {result && zone && exercise && (
+          <button
+            type="button"
+            onClick={() =>
+              onLogSet({
+                zone: zone as Zone,
+                exerciseName: exercise,
+                weight,
+                reps,
+                sets,
+              })
+            }
+            className="w-full mt-5 transition hover:brightness-110 active:translate-y-px"
+            style={{
+              ...fontDisplay,
+              fontSize: 13,
+              letterSpacing: "0.26em",
+              textTransform: "uppercase",
+              fontWeight: 800,
+              color: "#f5efe2",
+              padding: "12px 16px",
+              borderRadius: 4,
+              background: "linear-gradient(180deg, #7747b0 0%, #3a2466 100%)",
+              border: "1px solid #7747b0",
+              boxShadow:
+                "inset 0 1px 0 rgba(255,255,255,0.18), 0 0 12px rgba(119,71,176,0.55)",
+            }}
+          >
+            Log This Set →
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CalcResultCard({
+  exerciseName,
+  bodyweight,
+  sex,
+  ageGroup,
+  weight,
+  reps,
+  sets,
+  result,
+}: {
+  exerciseName: string;
+  bodyweight: number;
+  sex: "male" | "female";
+  ageGroup: string;
+  weight: number;
+  reps: number;
+  sets: number;
+  result: CalcResult;
+}) {
+  const { scale } = useHeatmapPalette();
+  const tiers = TIER_NAMES.map((t, i) => ({
+    ...t,
+    color: tierColorFromPalette(scale, i),
+  }));
+  const tier = result.tierIdx === -1 ? null : tiers[result.tierIdx];
+  const combos =
+    result.nextThreshold != null
+      ? suggestCombos(result.nextThreshold, weight)
+      : [];
+
+  return (
+    <div
+      className="rounded-md"
+      style={{
+        background: "rgba(20,14,30,0.65)",
+        border: `1px solid ${tier ? `${tier.color}55` : "rgba(107,79,58,0.40)"}`,
+        boxShadow: tier ? `0 0 14px ${tier.color}22` : undefined,
+      }}
+    >
+      {/* Title strip */}
+      <div
+        className="px-4 py-2 border-b border-bronze-deep/40"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(40,30,15,0.30), rgba(20,12,30,0.20))",
+        }}
+      >
+        <div
+          className="text-[10px] uppercase tracking-[0.24em] font-bold"
+          style={{ ...fontDisplay, color: "#d4a020" }}
+        >
+          {exerciseName} Analysis
+        </div>
+      </div>
+
+      <div className="px-4 py-4 space-y-4">
+        {/* e1RM line */}
+        <div className="flex items-baseline justify-between gap-3">
+          <div>
+            <div
+              className="text-[9px] uppercase tracking-[0.22em] text-muted/85 font-bold"
+              style={fontDisplay}
+            >
+              Estimated 1RM
+            </div>
+            <div
+              className="text-2xl font-bold tabular-nums"
+              style={{
+                ...fontDisplay,
+                color: "#f5efe2",
+                textShadow: "0 0 8px rgba(168,85,247,0.30)",
+              }}
+            >
+              {Math.round(result.e1rm)} lbs
+            </div>
+          </div>
+          <div className="text-right">
+            <div
+              className="text-[9px] uppercase tracking-[0.22em] text-muted/85 font-bold"
+              style={fontDisplay}
+            >
+              Effective
+            </div>
+            <div
+              className="text-lg font-bold tabular-nums"
+              style={{
+                ...fontDisplay,
+                color: tier ? tier.color : "#9a9282",
+              }}
+            >
+              {Math.round(result.effective)} lbs
+            </div>
+          </div>
+        </div>
+
+        {/* Rank bar */}
+        <div>
+          <div
+            className="text-[9px] uppercase tracking-[0.22em] text-muted/85 font-bold mb-2"
+            style={fontDisplay}
+          >
+            Your Rank
+          </div>
+          <RankBar tierIdx={result.tierIdx} position={result.position} />
+          {tier ? (
+            <div
+              className="text-center mt-2 text-[12px] uppercase tracking-[0.28em] font-bold"
+              style={{
+                ...fontDisplay,
+                color: tier.color,
+                textShadow: `0 0 8px ${tier.color}66`,
+              }}
+            >
+              {tier.label}
+            </div>
+          ) : (
+            <div
+              className="text-center mt-2 text-[11px] uppercase tracking-[0.22em] italic"
+              style={{ ...fontDisplay, color: "rgba(216,210,194,0.55)" }}
+            >
+              Below Beginner — keep building
+            </div>
+          )}
+        </div>
+
+        {/* Threshold table */}
+        <div>
+          <div
+            className="text-[9px] uppercase tracking-[0.22em] text-muted/85 font-bold mb-2"
+            style={fontDisplay}
+          >
+            For a {Math.round(bodyweight)} lb {sex === "female" ? "female" : "male"}, {ageGroup}
+          </div>
+          <ul className="space-y-0.5">
+            {tiers.map((t, i) => {
+              const isCurrent = i === result.tierIdx;
+              const min =
+                i === 0
+                  ? 0
+                  : i === 1
+                  ? Math.round(result.thresholds.beg)
+                  : i === 2
+                  ? Math.round(result.thresholds.nov)
+                  : i === 3
+                  ? Math.round(result.thresholds.int)
+                  : Math.round(result.thresholds.adv);
+              const max =
+                i === 0
+                  ? Math.round(result.thresholds.beg)
+                  : i === 1
+                  ? Math.round(result.thresholds.nov)
+                  : i === 2
+                  ? Math.round(result.thresholds.int)
+                  : i === 3
+                  ? Math.round(result.thresholds.adv)
+                  : null;
+              const range =
+                i === 0
+                  ? `< ${max} lbs`
+                  : max != null
+                  ? `${min} – ${max} lbs`
+                  : `${min}+ lbs`;
+              return (
+                <li
+                  key={t.key}
+                  className="flex items-center justify-between gap-2 px-2 py-1 rounded text-[11px]"
+                  style={{
+                    background: isCurrent ? `${t.color}1f` : undefined,
+                    border: isCurrent
+                      ? `1px solid ${t.color}66`
+                      : "1px solid transparent",
+                  }}
+                >
+                  <span
+                    className="uppercase tracking-[0.18em] font-bold"
+                    style={{ ...fontDisplay, color: t.color }}
+                  >
+                    {t.label}
+                  </span>
+                  <span
+                    className="tabular-nums"
+                    style={{
+                      color: isCurrent ? "#f5efe2" : "rgba(216,210,194,0.65)",
+                    }}
+                  >
+                    {range}
+                    {isCurrent && (
+                      <span
+                        className="ml-2 uppercase tracking-[0.18em]"
+                        style={{
+                          ...fontDisplay,
+                          fontSize: 9,
+                          color: t.color,
+                          fontWeight: 700,
+                        }}
+                      >
+                        ← YOU
+                      </span>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
+        {/* Progress to next rank */}
+        {result.nextThreshold != null && result.nextLabel ? (
+          <div
+            className="rounded p-3"
+            style={{
+              background: "rgba(184,134,11,0.10)",
+              border: "1px solid rgba(184,134,11,0.40)",
+            }}
+          >
+            <div
+              className="text-[10px] uppercase tracking-[0.22em] font-bold mb-2"
+              style={{ ...fontDisplay, color: "#d4a020" }}
+            >
+              ✦ Reach {result.nextLabel}
+            </div>
+            <div
+              className="text-[11px] mb-2"
+              style={{
+                ...fontDisplay,
+                color: "rgba(216,210,194,0.85)",
+              }}
+            >
+              You need{" "}
+              <span
+                className="font-bold tabular-nums"
+                style={{ color: "#f5efe2" }}
+              >
+                {Math.round(result.nextThreshold)} lbs
+              </span>{" "}
+              e1RM. Try one of:
+            </div>
+            <ul className="space-y-0.5">
+              {combos.map((c, i) => (
+                <li
+                  key={i}
+                  className="text-[11px] tabular-nums flex items-center gap-2"
+                  style={{ color: "#f0c45a" }}
+                >
+                  <span aria-hidden style={{ color: "rgba(184,134,11,0.65)" }}>
+                    →
+                  </span>
+                  <span style={{ fontWeight: 700 }}>{c.weight} lbs</span>
+                  <span style={{ color: "rgba(216,210,194,0.65)" }}>
+                    × {c.reps} reps
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : (
+          <div
+            className="rounded p-3 text-center"
+            style={{
+              background: "rgba(168,85,247,0.10)",
+              border: "1px solid rgba(168,85,247,0.40)",
+            }}
+          >
+            <div
+              className="text-[11px] uppercase tracking-[0.22em] font-bold"
+              style={{ ...fontDisplay, color: "#c084fc" }}
+            >
+              ✦ You've reached Elite — push the limit
+            </div>
+          </div>
+        )}
+
+        {/* Math breakdown */}
+        <details
+          className="rounded text-[11px]"
+          style={{
+            background: "rgba(0,0,0,0.30)",
+            border: "1px solid rgba(107,79,58,0.30)",
+          }}
+        >
+          <summary
+            className="cursor-pointer px-3 py-2 uppercase tracking-[0.22em] font-bold"
+            style={{ ...fontDisplay, fontSize: 10, color: "#9a9282" }}
+          >
+            How we calculated this
+          </summary>
+          <div
+            className="px-3 py-2 space-y-1 leading-relaxed"
+            style={{ color: "rgba(216,210,194,0.78)" }}
+          >
+            <div>
+              Weight × reps:{" "}
+              <span className="tabular-nums" style={{ color: "#f5efe2" }}>
+                {weight} × {reps}
+              </span>
+            </div>
+            <div>
+              e1RM (Epley): {weight} × (1 + {reps}/30) ={" "}
+              <span className="tabular-nums" style={{ color: "#f5efe2" }}>
+                {Math.round(result.e1rm)} lbs
+              </span>
+            </div>
+            <div>
+              Volume bonus ({sets} set{sets === 1 ? "" : "s"}): × {result.volMult.toFixed(2)} ={" "}
+              <span className="tabular-nums" style={{ color: "#f5efe2" }}>
+                {Math.round(result.effective)} lbs effective
+              </span>
+            </div>
+            <div>
+              Compared to {Math.round(bodyweight)} lb {sex} thresholds for{" "}
+              <em>{exerciseName}</em>:
+            </div>
+            <div className="pl-3">
+              {tier ? (
+                <>
+                  ≥ {Math.round(
+                    result.tierIdx === 0
+                      ? result.thresholds.beg
+                      : result.tierIdx === 1
+                      ? result.thresholds.nov
+                      : result.tierIdx === 2
+                      ? result.thresholds.int
+                      : result.tierIdx === 3
+                      ? result.thresholds.adv
+                      : result.thresholds.el
+                  )}{" "}
+                  lbs →{" "}
+                  <span style={{ color: tier.color, fontWeight: 700 }}>
+                    {tier.label.toUpperCase()}
+                  </span>
+                </>
+              ) : (
+                "Below Beginner threshold"
+              )}
+            </div>
+          </div>
+        </details>
+      </div>
+    </div>
+  );
+}
+
+function RankBar({
+  tierIdx,
+  position,
+}: {
+  tierIdx: number;
+  position: number;
+}) {
+  const { scale } = useHeatmapPalette();
+  const tiers = TIER_NAMES.map((t, i) => ({
+    ...t,
+    color: tierColorFromPalette(scale, i),
+  }));
+  return (
+    <div className="relative" style={{ height: 28 }}>
+      <div
+        className="absolute inset-0 grid grid-cols-5 rounded overflow-hidden"
+        style={{
+          border: "1px solid rgba(107,79,58,0.30)",
+          boxShadow: "inset 0 1px 2px rgba(0,0,0,0.55)",
+        }}
+      >
+        {tiers.map((t, i) => (
+          <div
+            key={t.key}
+            style={{
+              background: t.color,
+              opacity: i === tierIdx ? 0.85 : 0.30,
+              transition: "opacity 200ms",
+            }}
+            aria-label={t.label}
+          />
+        ))}
+      </div>
+      {/* Marker */}
+      <div
+        aria-hidden
+        className="absolute"
+        style={{
+          left: `${position * 100}%`,
+          top: -4,
+          bottom: -4,
+          width: 4,
+          marginLeft: -2,
+          background: "#f5efe2",
+          borderRadius: 2,
+          boxShadow:
+            tierIdx >= 0
+              ? `0 0 10px ${tiers[tierIdx].color}, 0 0 20px ${tiers[tierIdx].color}aa`
+              : "0 0 6px rgba(216,210,194,0.5)",
+        }}
+      />
+      <div
+        className="absolute inset-x-0 -bottom-5 grid grid-cols-5 text-[8px] uppercase tracking-[0.18em] font-bold"
+        style={{ ...fontDisplay, color: "rgba(216,210,194,0.55)" }}
+      >
+        {tiers.map((t) => (
+          <div key={t.key} className="text-center">
+            {t.label}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CompareCard({ a, b }: { a: CalcResult; b: CalcResult }) {
+  const winner = a.effective === b.effective ? null : a.effective > b.effective ? "a" : "b";
+  return (
+    <div
+      className="grid grid-cols-2 gap-2 rounded p-3"
+      style={{
+        background: "rgba(20,14,30,0.55)",
+        border: "1px solid rgba(107,79,58,0.30)",
+      }}
+    >
+      <CompareCol label="Set 1" result={a} winner={winner === "a"} />
+      <CompareCol label="Set 2" result={b} winner={winner === "b"} />
+    </div>
+  );
+}
+
+function CompareCol({
+  label,
+  result,
+  winner,
+}: {
+  label: string;
+  result: CalcResult;
+  winner: boolean;
+}) {
+  const { scale } = useHeatmapPalette();
+  const tier =
+    result.tierIdx === -1
+      ? null
+      : {
+          ...TIER_NAMES[result.tierIdx],
+          color: tierColorFromPalette(scale, result.tierIdx),
+        };
+  return (
+    <div
+      className="rounded p-2"
+      style={{
+        background: winner ? "rgba(34,197,94,0.10)" : "transparent",
+        border: winner
+          ? "1px solid rgba(34,197,94,0.55)"
+          : "1px solid transparent",
+      }}
+    >
+      <div
+        className="text-[9px] uppercase tracking-[0.22em] font-bold flex items-center gap-1"
+        style={{ ...fontDisplay, color: winner ? "#22c55e" : "#9a9282" }}
+      >
+        {label}
+        {winner && <span aria-hidden>★</span>}
+      </div>
+      <div
+        className="text-[16px] font-bold tabular-nums mt-1"
+        style={{ ...fontDisplay, color: tier ? tier.color : "#9a9282" }}
+      >
+        {Math.round(result.effective)} lbs
+      </div>
+      <div
+        className="text-[10px] uppercase tracking-[0.18em] mt-0.5"
+        style={{
+          ...fontDisplay,
+          color: tier ? tier.color : "rgba(216,210,194,0.55)",
+        }}
+      >
+        {tier ? tier.label : "Sub-beginner"}
+      </div>
+    </div>
+  );
+}
+
+// ─── Multi-exercise log session modal ───────────────────────────
+// Self-contained: manages its own date, preset, exercise/set rows.
+// Replaces the old single-exercise LogSessionModal flow. Shared by
+// the "Log Session +" header button and the "Log Retroactively"
+// flow from past-day popups.
+type MELSetRow = {
+  rowKey: string;
+  weight: string;
+  reps: string;
+  sets: string;
+};
+type MELExerciseBlock = {
+  rowKey: string;
+  zone: Zone | "";
+  exerciseName: string;
+  setRows: MELSetRow[];
+};
+
+function MultiExerciseLogModal({
+  userId,
+  initialDate,
+  presets,
+  lastByExercise,
+  initialExercise,
+  onClose,
+  onSaved,
+}: {
+  userId: string;
+  initialDate: string;
+  presets: WorkoutPreset[];
+  lastByExercise: LastSetByExercise;
+  initialExercise?: {
+    zone: Zone;
+    exerciseName: string;
+    weight: string;
+    reps: string;
+    sets: string;
+  } | null;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const supabase = createSupabaseBrowserClient();
+  const todayPTStr = todayPT();
+  const isPast = initialDate < todayPTStr;
+
+  const [date, setDate] = useState<string>(initialDate);
+  const [notes, setNotes] = useState("");
+  const [exercises, setExercises] = useState<MELExerciseBlock[]>(() => {
+    if (!initialExercise) return [];
+    const ts = Date.now();
+    return [
+      {
+        rowKey: `prefill-${ts}`,
+        zone: initialExercise.zone,
+        exerciseName: initialExercise.exerciseName,
+        setRows: [
+          {
+            rowKey: `set-${ts}`,
+            weight: initialExercise.weight,
+            reps: initialExercise.reps,
+            sets: initialExercise.sets,
+          },
+        ],
+      },
+    ];
+  });
+  const [presetId, setPresetId] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !submitting) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose, submitting]);
+
+  function applyPreset(p: WorkoutPreset) {
+    const ts = Date.now();
+    setExercises(
+      p.exercises.map((ex, i) => ({
+        rowKey: `preset-${i}-${ts}`,
+        zone: ex.muscleGroup as Zone,
+        exerciseName: ex.exerciseName,
+        setRows: [
+          {
+            rowKey: `set-${i}-${ts}`,
+            weight: "",
+            reps: "",
+            sets: "",
+          },
+        ],
+      }))
+    );
+    setPresetId(p.id);
+  }
+
+  function addExerciseManually() {
+    setPresetId("");
+    setExercises((xs) => [
+      ...xs,
+      {
+        rowKey: `ex-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        zone: "",
+        exerciseName: "",
+        setRows: [
+          {
+            rowKey: `set-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            weight: "",
+            reps: "",
+            sets: "",
+          },
+        ],
+      },
+    ]);
+  }
+
+  function removeExercise(rowKey: string) {
+    setExercises((xs) => xs.filter((x) => x.rowKey !== rowKey));
+  }
+
+  function patchExercise(rowKey: string, patch: Partial<MELExerciseBlock>) {
+    setExercises((xs) =>
+      xs.map((x) => (x.rowKey === rowKey ? { ...x, ...patch } : x))
+    );
+  }
+
+  function patchSet(
+    exRowKey: string,
+    setRowKey: string,
+    patch: Partial<MELSetRow>
+  ) {
+    setExercises((xs) =>
+      xs.map((x) =>
+        x.rowKey !== exRowKey
+          ? x
+          : {
+              ...x,
+              setRows: x.setRows.map((s) =>
+                s.rowKey === setRowKey ? { ...s, ...patch } : s
+              ),
+            }
+      )
+    );
+  }
+
+  function addSet(exRowKey: string) {
+    setExercises((xs) =>
+      xs.map((x) => {
+        if (x.rowKey !== exRowKey) return x;
+        const last = x.setRows[x.setRows.length - 1];
+        return {
+          ...x,
+          setRows: [
+            ...x.setRows,
+            {
+              rowKey: `set-${Date.now()}-${Math.random()
+                .toString(36)
+                .slice(2, 6)}`,
+              // Pre-fill with previous row for easy progressive entry.
+              weight: last?.weight ?? "",
+              reps: last?.reps ?? "",
+              sets: "",
+            },
+          ],
+        };
+      })
+    );
+  }
+
+  function removeSet(exRowKey: string, setRowKey: string) {
+    setExercises((xs) =>
+      xs
+        .map((x) => {
+          if (x.rowKey !== exRowKey) return x;
+          const next = x.setRows.filter((s) => s.rowKey !== setRowKey);
+          return next.length > 0 ? { ...x, setRows: next } : null;
+        })
+        .filter((x): x is MELExerciseBlock => x !== null)
+    );
+  }
+
+  async function save() {
+    setErr(null);
+    // Validate
+    const validBlocks = exercises
+      .map((b) => ({
+        ...b,
+        setRows: b.setRows.filter(
+          (s) =>
+            Number(s.weight) > 0 &&
+            Number(s.reps) > 0 &&
+            Number(s.sets) > 0
+        ),
+      }))
+      .filter(
+        (b) => b.zone && b.exerciseName && b.setRows.length > 0
+      );
+
+    if (validBlocks.length === 0) {
+      setErr(
+        "Add at least one exercise with a complete set (weight, reps, sets)."
+      );
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      // 1) Create the parent workout row.
+      const { data: workout, error: wErr } = await supabase
+        .from("workouts")
+        .insert({
+          user_id: userId,
+          date,
+          notes: notes.trim() || null,
+        })
+        .select()
+        .single();
+      if (wErr) throw wErr;
+
+      // 2) Build set rows.
+      const lookup = new Map(EXERCISE_OPTIONS.map((e) => [e.name, e]));
+      const baseRows = validBlocks.flatMap((b) =>
+        b.setRows.map((s) => ({
+          workout_id: workout.id,
+          exercise_name: b.exerciseName,
+          muscle_group: b.zone as string,
+          weight_lbs: Number(s.weight),
+          reps: Number(s.reps),
+          sets: Number(s.sets),
+        }))
+      );
+      const withPrimary = baseRows.map((row, i) => {
+        const flat = validBlocks.flatMap((b) =>
+          b.setRows.map(() => b.exerciseName)
+        );
+        const exName = flat[i];
+        return {
+          ...row,
+          primary_muscle: lookup.get(exName)?.muscles?.[0] ?? null,
+        };
+      });
+
+      const ins = await supabase.from("workout_sets").insert(withPrimary);
+      if (ins.error) {
+        const code = (ins.error as any).code;
+        const missing =
+          code === "42703" ||
+          code === "PGRST204" ||
+          /primary_muscle/i.test(ins.error.message ?? "");
+        if (!missing) throw ins.error;
+        const retry = await supabase
+          .from("workout_sets")
+          .insert(baseRows);
+        if (retry.error) throw retry.error;
+      }
+
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to save session.");
+      console.error("[MultiExerciseLogModal save]", e);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const longDateLabel = useMemo(() => {
+    const d = new Date(date + "T12:00:00");
+    return d.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+  }, [date]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-stretch justify-center"
+      onClick={() => !submitting && onClose()}
+      style={{ animation: "modalFadeIn 180ms ease-out" }}
+      role="dialog"
+      aria-modal
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{
+          background: "rgba(2,2,8,0.85)",
+          backdropFilter: "blur(3px)",
+        }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-2xl flex flex-col"
+        style={{
+          background: "var(--noise-bg), #0a0a14",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05)",
+        }}
+      >
+        {/* Header */}
+        <header className="flex items-center justify-between gap-3 px-5 py-4 border-b border-bronze-deep/60 shrink-0">
+          <div className="min-w-0">
+            <div
+              className="text-[10px] uppercase tracking-[0.32em] text-gold/80"
+              style={fontDisplay}
+            >
+              {isPast ? "Log Retroactively" : "Log Session"}
+            </div>
+            <h2
+              className="text-lg font-bold text-ink truncate"
+              style={fontDisplay}
+            >
+              {longDateLabel}
+            </h2>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <input
+              type="date"
+              value={date}
+              max={todayPTStr}
+              onChange={(e) => setDate(e.target.value)}
+              className="text-xs"
+              style={{ minHeight: 36, padding: "4px 8px" }}
+              aria-label="Session date"
+            />
+            <button
+              type="button"
+              onClick={save}
+              disabled={submitting}
+              className="btn-stone text-[10px]"
+              style={{
+                ...fontDisplay,
+                letterSpacing: "0.22em",
+                padding: "0.55rem 0.85rem",
+                background: "linear-gradient(180deg, #7747b0, #3a2466)",
+                borderColor: "#7747b0",
+                color: "#f0e6ff",
+              }}
+            >
+              {submitting ? "Saving…" : "Save Session"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center rounded transition disabled:opacity-40"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+        </header>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
+          {/* Preset picker — when no exercises chosen yet */}
+          {exercises.length === 0 && (
+            <div
+              className="rounded p-4"
+              style={{
+                background: "rgba(20,14,30,0.55)",
+                border: "1px solid rgba(107,79,58,0.40)",
+              }}
+            >
+              <div
+                className="text-[11px] uppercase tracking-[0.22em] text-gold/85 font-bold mb-3"
+                style={fontDisplay}
+              >
+                Use a Preset
+              </div>
+              {presets.length === 0 ? (
+                <p className="text-[12px] text-muted italic">
+                  No presets saved yet. Add an exercise manually below.
+                </p>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                  {presets.map((p, i) => {
+                    const accent = presetColor(i);
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => applyPreset(p)}
+                        className="text-left transition hover:brightness-110"
+                        style={{
+                          padding: "8px 10px 8px 12px",
+                          background: `linear-gradient(90deg, ${accent}33 0%, ${accent}10 100%)`,
+                          borderTop: `1px solid ${accent}55`,
+                          borderRight: `1px solid ${accent}55`,
+                          borderBottom: `1px solid ${accent}55`,
+                          borderLeft: `4px solid ${accent}`,
+                          borderRadius: 4,
+                        }}
+                      >
+                        <div
+                          className="font-bold tracking-tight truncate"
+                          style={{
+                            ...fontDisplay,
+                            fontSize: 12,
+                            color: "#f5efe2",
+                          }}
+                        >
+                          {p.name}
+                        </div>
+                        <div
+                          className="text-[9px] uppercase tracking-[0.18em] mt-0.5"
+                          style={{
+                            ...fontDisplay,
+                            color: "rgba(245,239,226,0.55)",
+                          }}
+                        >
+                          {p.exercises.length} ex
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="mt-3 flex items-center gap-2">
+                <div className="flex-1 h-px bg-bronze-deep/40" />
+                <span
+                  className="text-[9px] uppercase tracking-[0.32em] text-muted/70"
+                  style={fontDisplay}
+                >
+                  or
+                </span>
+                <div className="flex-1 h-px bg-bronze-deep/40" />
+              </div>
+              <button
+                type="button"
+                onClick={addExerciseManually}
+                className="btn-stone btn-stone-ghost w-full mt-3 text-[11px]"
+                style={{
+                  ...fontDisplay,
+                  letterSpacing: "0.22em",
+                  padding: "0.6rem 0.9rem",
+                }}
+              >
+                Add Manually +
+              </button>
+            </div>
+          )}
+
+          {exercises.length > 0 && presetId && (
+            <div
+              className="rounded px-3 py-1.5 text-[10px] uppercase tracking-[0.18em] flex items-center justify-between"
+              style={{
+                background: "rgba(91,57,147,0.10)",
+                border: "1px solid rgba(168,85,247,0.30)",
+                ...fontDisplay,
+                color: "rgba(216,210,194,0.75)",
+              }}
+            >
+              <span>
+                Loaded from preset:{" "}
+                <span style={{ color: "#d4b6f5" }}>
+                  {presets.find((p) => p.id === presetId)?.name ?? "?"}
+                </span>
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setExercises([]);
+                  setPresetId("");
+                }}
+                className="text-muted/70 hover:text-ink"
+                style={fontDisplay}
+              >
+                clear
+              </button>
+            </div>
+          )}
+
+          {/* Exercise blocks */}
+          {exercises.map((block) => (
+            <ExerciseLogBlock
+              key={block.rowKey}
+              block={block}
+              last={lastByExercise[block.exerciseName]}
+              onPatch={(patch) => patchExercise(block.rowKey, patch)}
+              onPatchSet={(setKey, patch) =>
+                patchSet(block.rowKey, setKey, patch)
+              }
+              onAddSet={() => addSet(block.rowKey)}
+              onRemoveSet={(setKey) => removeSet(block.rowKey, setKey)}
+              onRemove={() => removeExercise(block.rowKey)}
+            />
+          ))}
+
+          {exercises.length > 0 && (
+            <button
+              type="button"
+              onClick={addExerciseManually}
+              className="w-full transition hover:brightness-110"
+              style={{
+                ...fontDisplay,
+                fontSize: 11,
+                letterSpacing: "0.22em",
+                textTransform: "uppercase",
+                fontWeight: 800,
+                padding: "10px 14px",
+                borderRadius: 4,
+                background: "rgba(184,134,11,0.10)",
+                border: "1px dashed rgba(184,134,11,0.55)",
+                color: "#d4a020",
+              }}
+            >
+              + Add Exercise
+            </button>
+          )}
+
+          {/* Notes — always visible */}
+          {exercises.length > 0 && (
+            <div className="mt-3">
+              <label
+                className="block text-[10px] uppercase tracking-[0.18em] text-muted mb-1"
+                style={fontDisplay}
+              >
+                Session Notes (optional)
+              </label>
+              <textarea
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+                rows={2}
+                placeholder="e.g. felt strong today"
+                className="w-full text-[12px]"
+              />
+            </div>
+          )}
+
+          {err && (
+            <p
+              className="text-[12px] mt-2"
+              style={{ color: "#dc6868" }}
+            >
+              {err}
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExerciseLogBlock({
+  block,
+  last,
+  onPatch,
+  onPatchSet,
+  onAddSet,
+  onRemoveSet,
+  onRemove,
+}: {
+  block: MELExerciseBlock;
+  last: LastSetByExercise[string] | undefined;
+  onPatch: (patch: Partial<MELExerciseBlock>) => void;
+  onPatchSet: (setKey: string, patch: Partial<MELSetRow>) => void;
+  onAddSet: () => void;
+  onRemoveSet: (setKey: string) => void;
+  onRemove: () => void;
+}) {
+  const exerciseList = useMemo(
+    () => (block.zone ? exercisesForZone(block.zone) : []),
+    [block.zone]
+  );
+  return (
+    <div
+      className="rounded p-3 space-y-2"
+      style={{
+        background: "rgba(20,14,30,0.55)",
+        border: "1px solid rgba(107,79,58,0.40)",
+      }}
+    >
+      <div className="grid grid-cols-[1fr_1fr_28px] gap-2 items-center">
+        <select
+          value={block.zone}
+          onChange={(e) =>
+            onPatch({
+              zone: (e.target.value || "") as Zone | "",
+              exerciseName: "",
+            })
+          }
+          className="w-full text-[12px]"
+          style={{ minHeight: 34 }}
+        >
+          <option value="">Muscle group</option>
+          {ZONES.map((z) => (
+            <option key={z} value={z}>
+              {ZONE_LABEL[z]}
+            </option>
+          ))}
+        </select>
+        <select
+          value={block.exerciseName}
+          onChange={(e) => onPatch({ exerciseName: e.target.value })}
+          disabled={!block.zone}
+          className="w-full text-[12px]"
+          style={{ minHeight: 34 }}
+        >
+          <option value="">Exercise</option>
+          {exerciseList.map((ex) => (
+            <option key={ex.name} value={ex.name}>
+              {ex.name}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="w-7 h-7 flex items-center justify-center rounded transition hover:brightness-125"
+          style={{ color: "rgba(220,80,80,0.75)" }}
+          title="Remove exercise"
+          aria-label="Remove exercise"
+        >
+          <TrashGlyph />
+        </button>
+      </div>
+
+      {/* Last-time reference */}
+      <div className="text-[11px]" style={{ color: "#b8860b" }}>
+        {block.exerciseName ? (
+          last ? (
+            <>
+              Last time:{" "}
+              <span
+                className="tabular-nums font-semibold"
+                style={{ color: "#f5efe2" }}
+              >
+                {last.weight} × {last.reps} × {last.sets}
+              </span>
+              <span style={{ color: "rgba(216,210,194,0.55)" }}>
+                {" "}
+                · {formatDate(last.date)}
+              </span>
+            </>
+          ) : (
+            <span className="text-muted italic">No previous data</span>
+          )
+        ) : null}
+      </div>
+
+      {/* Set rows */}
+      {block.setRows.map((s, idx) => (
+        <div
+          key={s.rowKey}
+          className="grid grid-cols-[24px_1fr_8px_1fr_8px_1fr_28px] gap-1.5 items-center"
+        >
+          <span
+            className="text-[10px] uppercase tracking-[0.18em] text-muted/85 font-bold tabular-nums"
+            style={fontDisplay}
+          >
+            {idx + 1}
+          </span>
+          <input
+            type="number"
+            min="0"
+            step="0.5"
+            value={s.weight}
+            onChange={(e) =>
+              onPatchSet(s.rowKey, { weight: e.target.value })
+            }
+            className="w-full text-[12px] text-center tabular-nums"
+            style={{ minHeight: 32, padding: "4px 6px" }}
+            placeholder="lb"
+            aria-label={`Set ${idx + 1} weight`}
+          />
+          <span className="text-center text-muted/60" aria-hidden>
+            ×
+          </span>
+          <input
+            type="number"
+            min="0"
+            value={s.reps}
+            onChange={(e) =>
+              onPatchSet(s.rowKey, { reps: e.target.value })
+            }
+            className="w-full text-[12px] text-center tabular-nums"
+            style={{ minHeight: 32, padding: "4px 6px" }}
+            placeholder="reps"
+            aria-label={`Set ${idx + 1} reps`}
+          />
+          <span className="text-center text-muted/60" aria-hidden>
+            ×
+          </span>
+          <input
+            type="number"
+            min="0"
+            value={s.sets}
+            onChange={(e) =>
+              onPatchSet(s.rowKey, { sets: e.target.value })
+            }
+            className="w-full text-[12px] text-center tabular-nums"
+            style={{ minHeight: 32, padding: "4px 6px" }}
+            placeholder="sets"
+            aria-label={`Set ${idx + 1} sets count`}
+          />
+          <button
+            type="button"
+            onClick={() => onRemoveSet(s.rowKey)}
+            className="w-7 h-7 flex items-center justify-center rounded transition hover:brightness-125"
+            style={{ color: "rgba(220,80,80,0.75)" }}
+            title="Remove this set"
+            aria-label="Remove set"
+          >
+            <TrashGlyph />
+          </button>
+        </div>
+      ))}
+
+      <div className="flex items-center gap-2 pt-1">
+        <button
+          type="button"
+          onClick={onAddSet}
+          className="text-[10px] uppercase tracking-[0.18em] py-1.5 px-3 rounded border border-bronze-deep/50 text-muted hover:text-gold hover:border-bronze transition"
+          style={fontDisplay}
+        >
+          + Add Set
+        </button>
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-[10px] uppercase tracking-[0.18em] py-1.5 px-3 rounded text-muted/70 hover:text-danger transition ml-auto"
+          style={fontDisplay}
+        >
+          Remove Exercise
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Log Session modal — redesigned 2-column flow ────────────────
 function LogSessionModal({
   inputCls,
@@ -2856,6 +4499,7 @@ type ScheduleDayClient = {
   day_of_week: number;
   is_rest: boolean;
   workout_type: string | null;
+  preset_id: string | null;
 };
 
 const WORKOUT_TYPES: Array<{ value: string; label: string }> = [
@@ -2868,7 +4512,9 @@ const WORKOUT_TYPES: Array<{ value: string; label: string }> = [
   { value: "custom", label: "Custom" },
 ];
 
-// Display order: Mon..Sun (Mon = 1, Sun = 0).
+// Display order: Mon..Sun (My Week now reads left-to-right starting on Monday).
+// `dow` keeps the JS getDay() value (0=Sun..6=Sat) so existing template
+// lookups keyed on day-of-week continue to work.
 const WEEK_ORDER: Array<{ dow: number; short: string; full: string }> = [
   { dow: 1, short: "Mon", full: "Monday" },
   { dow: 2, short: "Tue", full: "Tuesday" },
@@ -2879,185 +4525,2853 @@ const WEEK_ORDER: Array<{ dow: number; short: string; full: string }> = [
   { dow: 0, short: "Sun", full: "Sunday" },
 ];
 
+// Per-type tint + accent for the calendar cells.
+const TYPE_THEME: Record<
+  string,
+  { bg: string; border: string; label: string; text: string }
+> = {
+  push:      { bg: "rgba(160,67,42,0.18)",   border: "rgba(196,99,67,0.55)",  label: "Push",      text: "#f0b89e" },
+  pull:      { bg: "rgba(58,90,138,0.20)",   border: "rgba(96,140,200,0.55)", label: "Pull",      text: "#a6c5ec" },
+  legs:      { bg: "rgba(61,107,58,0.20)",   border: "rgba(96,180,90,0.55)",  label: "Legs",      text: "#a8e0a4" },
+  upper:     { bg: "rgba(184,134,11,0.18)",  border: "rgba(216,160,32,0.55)", label: "Upper",     text: "#f0d68f" },
+  lower:     { bg: "rgba(91,57,147,0.22)",   border: "rgba(168,85,247,0.55)", label: "Lower",     text: "#d4b6f5" },
+  full_body: { bg: "rgba(212,160,32,0.20)",  border: "rgba(232,200,80,0.60)", label: "Full Body", text: "#f5d97a" },
+  custom:    { bg: "rgba(91,57,147,0.18)",   border: "rgba(168,85,247,0.45)", label: "Custom",    text: "#d4b6f5" },
+};
+const REST_THEME = {
+  bg: "rgba(20,14,30,0.55)",
+  border: "rgba(107,79,58,0.45)",
+  label: "Rest",
+  text: "#7a6f60",
+};
+
+function buildDaysMap(
+  rows: Array<{
+    day_of_week: number;
+    is_rest: boolean;
+    workout_type: string | null;
+    preset_id?: string | null;
+  }>
+): Record<number, ScheduleDayClient> {
+  const m: Record<number, ScheduleDayClient> = {};
+  for (const d of rows) {
+    m[d.day_of_week] = {
+      day_of_week: d.day_of_week,
+      is_rest: d.is_rest,
+      workout_type: d.workout_type ?? null,
+      preset_id: d.preset_id ?? null,
+    };
+  }
+  for (const w of WEEK_ORDER) {
+    if (!m[w.dow]) {
+      m[w.dow] = {
+        day_of_week: w.dow,
+        is_rest: false,
+        workout_type: null,
+        preset_id: null,
+      };
+    }
+  }
+  return m;
+}
+
+function weekOffsetLabel(offset: number): string {
+  if (offset === 0) return "This Week";
+  if (offset === -1) return "Last Week";
+  if (offset === 1) return "Next Week";
+  if (offset < 0) return `${Math.abs(offset)} Weeks Ago`;
+  return `${offset} Weeks Ahead`;
+}
+
+// Map workout-type → relevant zones for smart suggestions.
+const TYPE_ZONES: Record<string, Zone[]> = {
+  push: ["chest", "shoulders", "triceps"],
+  pull: ["back", "biceps", "forearms"],
+  legs: ["quads", "hamstrings", "glutes", "calves"],
+  upper: ["chest", "back", "shoulders", "biceps", "triceps"],
+  lower: ["quads", "hamstrings", "glutes", "calves"],
+  full_body: ["chest", "back", "quads", "shoulders", "hamstrings"],
+  custom: ["chest", "back", "shoulders", "biceps", "triceps", "quads"],
+};
+
+// Sort the workout-type's zones by current level (ascending) and pick a
+// primary exercise for each of the lowest 3-4. Returns suggestions
+// shaped for the modal card.
+function buildSmartSuggestions(
+  workoutType: string,
+  zoneLevels: Record<Zone, StrengthLevel>
+): Array<{ exercise: string; zone: Zone; level: StrengthLevel }> {
+  const zones = TYPE_ZONES[workoutType] ?? [];
+  if (zones.length === 0) return [];
+  const ranked = zones
+    .map((z) => ({
+      zone: z,
+      level: zoneLevels[z] ?? "untrained",
+      rank: LEVEL_RANK[zoneLevels[z] ?? "untrained"],
+    }))
+    .sort((a, b) => a.rank - b.rank);
+
+  const out: Array<{
+    exercise: string;
+    zone: Zone;
+    level: StrengthLevel;
+  }> = [];
+  const seen = new Set<string>();
+  for (const r of ranked) {
+    const list = exercisesForZoneTiered(r.zone);
+    const primary = list.find(
+      (e) => e.tier === "primary" && !seen.has(e.exercise)
+    );
+    if (!primary) continue;
+    seen.add(primary.exercise);
+    out.push({ exercise: primary.exercise, zone: r.zone, level: r.level });
+    if (out.length >= 4) break;
+  }
+  return out;
+}
+
+// Compute the Monday-anchored start-of-week for a given week_offset
+// (0 = current week, -1 = last week, +1 = next). Returns midnight
+// local time.
+function weekStartFor(offset: number): Date {
+  const now = new Date();
+  const monday = new Date(now);
+  monday.setHours(0, 0, 0, 0);
+  const offsetFromMon = (now.getDay() + 6) % 7; // Mon→0, Sun→6
+  monday.setDate(monday.getDate() - offsetFromMon + offset * 7);
+  return monday;
+}
+
+// Given the row's WEEK_ORDER index (0=Mon..6=Sun), return the Date
+// for that cell. Always reads from `weekStart + idx days` so the
+// rendering order and the underlying dates stay in lockstep.
+function dateForCellByIndex(weekStart: Date, idx: number): Date {
+  const d = new Date(weekStart);
+  d.setDate(d.getDate() + idx);
+  return d;
+}
+
+function shortDateLabel(date: Date): string {
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+}
+
+function weekRangeLabel(weekStart: Date): string {
+  const end = new Date(weekStart);
+  end.setDate(end.getDate() + 6);
+  const fmt = (d: Date) =>
+    d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${fmt(weekStart)} – ${fmt(end)}, ${end.getFullYear()}`;
+}
+
+function isoForDate(date: Date): string {
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${m}-${d}`;
+}
+
+// ─── Date-keyed entry coming back from /api/daily-schedule.
+type DailyEntry = {
+  date: string;
+  is_rest: boolean;
+  workout_type: string | null;
+  preset_id: string | null;
+  notes?: string | null;
+};
+
+function buildDailyMap(rows: DailyEntry[]): Record<string, DailyEntry> {
+  const m: Record<string, DailyEntry> = {};
+  for (const r of rows) m[r.date] = r;
+  return m;
+}
+
 function WeeklySchedule({
-  initialDays,
+  userId,
+  template,
+  initialDaily,
+  initialWeekStartISO,
+  tableMissing,
+  presets,
+  lastByExercise,
+  zoneLevels,
+  workoutDays,
+  onOpenLogForDate,
 }: {
-  initialDays: ScheduleDayClient[];
+  userId: string;
+  template: ScheduleDayClient[];
+  initialDaily: DailyEntry[];
+  initialWeekStartISO: string;
+  tableMissing: boolean;
+  presets: WorkoutPreset[];
+  lastByExercise: LastSetByExercise;
+  zoneLevels: Record<Zone, StrengthLevel>;
+  workoutDays: WorkoutDaySet[];
+  onOpenLogForDate: (iso: string) => void;
 }) {
   const router = useRouter();
-  const [days, setDays] = useState<Record<number, ScheduleDayClient>>(() => {
-    const m: Record<number, ScheduleDayClient> = {};
-    for (const d of initialDays) m[d.day_of_week] = d;
-    // Default any missing day to a TRAIN entry with no type set.
-    for (const w of WEEK_ORDER) {
-      if (!m[w.dow]) {
-        m[w.dow] = {
-          day_of_week: w.dow,
-          is_rest: false,
-          workout_type: null,
-        };
-      }
-    }
-    return m;
-  });
+  // Day-of-week template (fallback when no specific date is scheduled).
+  const templateByDow = useMemo(() => buildDaysMap(template), [template]);
+  const [weekOffset, setWeekOffset] = useState(0);
+  // Per-date overrides for the currently-loaded week.
+  const [dailyByDate, setDailyByDate] = useState<Record<string, DailyEntry>>(
+    () => buildDailyMap(initialDaily)
+  );
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
-
+  // Day to launch a session for — when set, opens StartSessionModal
+  // pre-filled from the linked preset.
+  const [sessionPreset, setSessionPreset] = useState<WorkoutPreset | null>(
+    null
+  );
+  const presetsById = useMemo(() => {
+    const m = new Map<string, WorkoutPreset>();
+    for (const p of presets) m.set(p.id, p);
+    return m;
+  }, [presets]);
+  // Color cycles by the preset's index in the user's preset list — the
+  // same mapping the My Presets section uses, so a given preset has the
+  // same accent everywhere on the page.
+  const presetColorById = useMemo(() => {
+    const m = new Map<string, string>();
+    presets.forEach((p, i) => m.set(p.id, presetColor(i)));
+    return m;
+  }, [presets]);
+  // Set of ISO dates that have at least one logged set — used to mark
+  // logged days inside the month preview.
+  const loggedDates = useMemo(() => {
+    const s = new Set<string>();
+    for (const d of workoutDays) if (d.date) s.add(d.date);
+    return s;
+  }, [workoutDays]);
+  const weekStart = useMemo(
+    () => weekStartFor(weekOffset),
+    [weekOffset]
+  );
+  // Prefer the server-rendered ISO for week 0 so the cells line up
+  // exactly with the rows the server preloaded. For other offsets,
+  // derive from the local Date — only the date math matters.
+  const weekStartISO = useMemo(
+    () => (weekOffset === 0 ? initialWeekStartISO : isoForDate(weekStart)),
+    [weekOffset, weekStart, initialWeekStartISO]
+  );
+  const todayISOStr = useMemo(() => isoForDate(new Date()), []);
+  const [monthOpen, setMonthOpen] = useState(false);
+  // Date currently open in the workout-detail popup. ISO YYYY-MM-DD.
+  const [detailDate, setDetailDate] = useState<string | null>(null);
+  // Quick lookup of all logged sets for any given date.
+  const setsByDate = useMemo(() => {
+    const m = new Map<string, WorkoutDaySet[]>();
+    for (const s of workoutDays) {
+      if (!s.date) continue;
+      const arr = m.get(s.date) ?? [];
+      arr.push(s);
+      m.set(s.date, arr);
+    }
+    return m;
+  }, [workoutDays]);
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 1800);
     return () => clearTimeout(t);
   }, [toast]);
 
-  function setDay(dow: number, patch: Partial<ScheduleDayClient>) {
-    setDays((cur) => ({ ...cur, [dow]: { ...cur[dow], ...patch } }));
-    setDirty(true);
+  /**
+   * Resolve the effective schedule entry for a given date — daily
+   * override wins, falling back to the day-of-week template.
+   *
+   * Returns:
+   *   { source: "daily", entry }        — explicit daily_schedule row
+   *   { source: "template", entry }     — from workout_schedule template
+   *   { source: "empty" }               — unplanned
+   */
+  function effectiveForDate(
+    iso: string
+  ): {
+    source: "daily" | "template" | "empty";
+    isRest: boolean;
+    workoutType: string | null;
+    presetId: string | null;
+  } {
+    const daily = dailyByDate[iso];
+    if (daily) {
+      return {
+        source: "daily",
+        isRest: !!daily.is_rest,
+        workoutType: daily.workout_type ?? null,
+        presetId: daily.preset_id ?? null,
+      };
+    }
+    const dow = new Date(iso + "T12:00:00").getDay();
+    const tpl = templateByDow[dow];
+    if (tpl && (tpl.is_rest || tpl.workout_type || tpl.preset_id)) {
+      return {
+        source: "template",
+        isRest: !!tpl.is_rest,
+        workoutType: tpl.workout_type ?? null,
+        presetId: tpl.preset_id ?? null,
+      };
+    }
+    return { source: "empty", isRest: false, workoutType: null, presetId: null };
   }
 
-  async function save() {
+  // Save (or clear) a single date. `patch === null` deletes the override
+  // so the cell falls back to the template again.
+  async function saveDay(
+    iso: string,
+    patch: { is_rest: boolean; workout_type: string | null; preset_id: string | null } | null
+  ) {
+    if (tableMissing) {
+      setToast(
+        "Run supabase/migrations/add_daily_schedule.sql to enable per-date scheduling."
+      );
+      return;
+    }
     setBusy(true);
     try {
-      const payload = WEEK_ORDER.map((w) => days[w.dow]);
-      const res = await fetch("/api/workout-schedule", {
-        method: "PUT",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ days: payload }),
-      });
+      let res: Response;
+      if (patch === null) {
+        // Optimistic local removal
+        setDailyByDate((cur) => {
+          const next = { ...cur };
+          delete next[iso];
+          return next;
+        });
+        res = await fetch(`/api/daily-schedule?date=${iso}`, { method: "DELETE" });
+      } else {
+        // Optimistic local upsert
+        setDailyByDate((cur) => ({
+          ...cur,
+          [iso]: {
+            date: iso,
+            is_rest: patch.is_rest,
+            workout_type: patch.workout_type,
+            preset_id: patch.preset_id,
+          },
+        }));
+        res = await fetch("/api/daily-schedule", {
+          method: "PUT",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            date: iso,
+            is_rest: patch.is_rest,
+            workout_type: patch.workout_type,
+            preset_id: patch.preset_id,
+          }),
+        });
+      }
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      if (!res.ok) {
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      }
       setToast("Saved");
-      setDirty(false);
+      // Surface daily_schedule's row back into Atlas / quests etc.
       router.refresh();
     } catch (e: any) {
-      alert(e?.message ?? "Failed to save schedule");
+      setToast(`Save failed: ${e?.message ?? "unknown"}`);
+      // Reload week to sync with server on failure
+      void refetchWeek(weekStartISO);
     } finally {
       setBusy(false);
     }
   }
 
+  async function refetchWeek(start: string): Promise<void> {
+    const end = addDaysISO(start, 6);
+    try {
+      const res = await fetch(
+        `/api/daily-schedule?from=${start}&to=${end}`
+      );
+      const data = await res.json().catch(() => ({}));
+      const rows: DailyEntry[] = Array.isArray(data?.days) ? data.days : [];
+      setDailyByDate(buildDailyMap(rows));
+    } catch {
+      // keep current state
+    }
+  }
+
+  async function navigateWeek(newOffset: number) {
+    if (newOffset === weekOffset) return;
+    setWeekOffset(newOffset);
+    const newStart = isoForDate(weekStartFor(newOffset));
+    await refetchWeek(newStart);
+  }
+
+  async function copyWeek(direction: "next" | "previous") {
+    if (tableMissing) {
+      setToast(
+        "Run supabase/migrations/add_daily_schedule.sql to enable per-date scheduling."
+      );
+      return;
+    }
+    const targetStart = addDaysISO(
+      weekStartISO,
+      direction === "next" ? 7 : -7
+    );
+    if (
+      !confirm(
+        `Copy this week to the ${
+          direction === "next" ? "next" : "previous"
+        } week? Existing entries in the target week will be overwritten.`
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch("/api/daily-schedule", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "copy_week",
+          source_start: weekStartISO,
+          target_start: targetStart,
+          overwrite: true,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error ?? `HTTP ${res.status}`);
+      setToast(
+        `Copied ${data?.copied ?? 0} day${data?.copied === 1 ? "" : "s"} → ${
+          direction === "next" ? "next" : "previous"
+        } week`
+      );
+      router.refresh();
+    } catch (e: any) {
+      setToast(`Copy failed: ${e?.message ?? "unknown"}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Today's day-of-week (0=Sun..6=Sat) for highlighting.
+  const todayDow = useMemo(() => new Date().getDay(), []);
+  // The date currently open in the planner popup (null = closed).
+  const [openDate, setOpenDate] = useState<string | null>(null);
+
   return (
     <section>
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-3">
         <h2
           className="text-[12px] uppercase tracking-[0.22em] text-gold font-bold"
           style={fontDisplay}
         >
           My Week
         </h2>
+        <button
+          type="button"
+          onClick={() => setMonthOpen(true)}
+          className="text-muted hover:text-gold transition w-7 h-7 flex items-center justify-center rounded"
+          title="Open monthly calendar"
+          aria-label="Open monthly calendar"
+        >
+          <CalendarIcon size={14} />
+        </button>
         <div className="rune-divider flex-1" />
-        {dirty && (
-          <button
-            type="button"
-            onClick={save}
-            disabled={busy}
-            className="btn-stone text-[10px]"
-            style={{
-              ...fontDisplay,
-              padding: "0.55rem 0.95rem",
-              letterSpacing: "0.22em",
-              background: "linear-gradient(180deg, #7747b0, #3a2466)",
-              borderColor: "#7747b0",
-              color: "#f0e6ff",
-            }}
+        {busy && (
+          <span
+            className="text-[10px] uppercase tracking-[0.22em] text-muted/80"
+            style={fontDisplay}
           >
-            {busy ? "Saving" : "Save Week"}
-          </button>
+            Saving…
+          </span>
+        )}
+        {toast && !busy && (
+          <span
+            className="text-[10px] uppercase tracking-[0.22em] text-gold/85"
+            style={fontDisplay}
+          >
+            {toast}
+          </span>
         )}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2">
-        {WEEK_ORDER.map((w) => {
-          const d = days[w.dow];
-          const isRest = d.is_rest;
-          return (
-            <div
-              key={w.dow}
-              className="tablet relative rounded p-3"
-              style={{
-                background: isRest
-                  ? "rgba(20, 14, 30, 0.55)"
-                  : "rgba(91, 57, 147, 0.10)",
-                border: isRest
-                  ? "1px solid rgba(107, 79, 58, 0.4)"
-                  : "1px solid rgba(91, 57, 147, 0.45)",
-              }}
-            >
-              <div
-                className="text-[10px] uppercase tracking-[0.22em] text-gold/85 font-bold"
+      {/* Week navigation */}
+      <div className="flex items-center justify-between mb-3 px-1">
+        <button
+          type="button"
+          onClick={() => navigateWeek(weekOffset - 1)}
+          className="text-[10px] uppercase tracking-[0.22em] font-bold text-muted hover:text-gold transition flex items-center gap-1"
+          style={fontDisplay}
+          aria-label="Previous week"
+        >
+          ‹ Last Week
+        </button>
+        <div className="flex flex-col items-center leading-tight">
+          <div
+            className="text-[12px] uppercase tracking-[0.28em] font-bold flex items-center gap-2"
+            style={{
+              ...fontDisplay,
+              color: weekOffset === 0 ? "#d4a020" : "#d8d2c2",
+              textShadow:
+                weekOffset === 0
+                  ? "0 0 8px rgba(212,160,32,0.4)"
+                  : undefined,
+            }}
+          >
+            {weekOffsetLabel(weekOffset)}
+            {weekOffset !== 0 && (
+              <button
+                type="button"
+                onClick={() => navigateWeek(0)}
+                className="text-[9px] uppercase tracking-[0.20em] text-muted hover:text-gold transition"
                 style={fontDisplay}
+                title="Jump back to this week"
               >
-                {w.short}
-              </div>
-              <div className="mt-2 flex bg-bg border border-bronze-deep rounded p-0.5 text-[10px] uppercase tracking-[0.18em]">
-                <button
-                  type="button"
-                  onClick={() => setDay(w.dow, { is_rest: false })}
-                  className={`flex-1 px-2 py-1 rounded-sm transition font-semibold ${
-                    !isRest
-                      ? "text-ink-strong"
-                      : "text-muted hover:text-ink"
-                  }`}
-                  style={{
-                    fontFamily: "var(--font-cinzel), Georgia, serif",
-                    background: !isRest ? "#7747b0" : undefined,
-                  }}
-                >
-                  Train
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setDay(w.dow, { is_rest: true, workout_type: null })
-                  }
-                  className={`flex-1 px-2 py-1 rounded-sm transition font-semibold ${
-                    isRest ? "text-ink-strong" : "text-muted hover:text-ink"
-                  }`}
-                  style={{
-                    fontFamily: "var(--font-cinzel), Georgia, serif",
-                    background: isRest ? "#6b4f3a" : undefined,
-                  }}
-                >
-                  Rest
-                </button>
-              </div>
-              {!isRest && (
-                <select
-                  value={d.workout_type ?? ""}
-                  onChange={(e) =>
-                    setDay(w.dow, {
-                      workout_type: e.target.value || null,
-                    })
-                  }
-                  className="w-full mt-2 text-[11px]"
-                  style={{ minHeight: 32, padding: "4px 6px" }}
-                >
-                  <option value="">Type…</option>
-                  {WORKOUT_TYPES.map((t) => (
-                    <option key={t.value} value={t.value}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {isRest && (
-                <div
-                  className="mt-2 text-[10px] uppercase tracking-[0.22em] text-muted text-center py-1.5"
-                  style={fontDisplay}
-                >
-                  Rest Day
-                </div>
-              )}
-            </div>
-          );
-        })}
+                · Today
+              </button>
+            )}
+          </div>
+          <div
+            className="text-[10px] tracking-[0.18em] mt-0.5"
+            style={{ ...fontDisplay, color: "rgba(216,210,194,0.55)" }}
+          >
+            {weekRangeLabel(weekStart)}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigateWeek(weekOffset + 1)}
+          className="text-[10px] uppercase tracking-[0.22em] font-bold text-muted hover:text-gold transition flex items-center gap-1"
+          style={fontDisplay}
+          aria-label="Next week"
+        >
+          Next Week ›
+        </button>
       </div>
+
+      {/* Calendar box — 7 day cells with shared borders for the grid feel */}
+      <div
+        className="rounded-md overflow-hidden"
+        style={{
+          border: "1px solid rgba(107,79,58,0.55)",
+          background: "rgba(12,12,24,0.65)",
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.04), inset 0 -1px 0 rgba(0,0,0,0.5), 0 6px 18px rgba(0,0,0,0.45)",
+        }}
+      >
+        <div className="grid grid-cols-7">
+          {WEEK_ORDER.map((w, i) => {
+            const cellDate = dateForCellByIndex(weekStart, i);
+            const cellISO = isoForDate(cellDate);
+            const effective = effectiveForDate(cellISO);
+            const isRest = effective.isRest;
+            const isEmpty = effective.source === "empty";
+            const isTemplate = effective.source === "template";
+            const linkedPreset = effective.presetId
+              ? presetsById.get(effective.presetId)
+              : null;
+            const presetAccent = effective.presetId
+              ? presetColorById.get(effective.presetId) ?? null
+              : null;
+            const theme = isEmpty
+              ? {
+                  bg: "rgba(20,14,30,0.30)",
+                  border: "rgba(107,79,58,0.25)",
+                  label: "Unplanned",
+                  text: "#6a6478",
+                }
+              : isRest
+              ? REST_THEME
+              : linkedPreset && presetAccent
+              ? {
+                  bg: `${presetAccent}1f`,
+                  border: `${presetAccent}66`,
+                  label: linkedPreset.name,
+                  text: "#f5efe2",
+                }
+              : {
+                  bg: "rgba(184,134,11,0.10)",
+                  border: "rgba(184,134,11,0.40)",
+                  label: "Custom",
+                  text: "#d4b6a6",
+                };
+            const isToday = cellISO === todayISOStr;
+            const isPast = cellISO < todayISOStr;
+            return (
+              <button
+                key={cellISO}
+                type="button"
+                onClick={() => {
+                  // Past + today → workout detail popup. Future (and empty
+                  // current/past) → date scheduler.
+                  if (isPast || isToday) {
+                    setDetailDate(cellISO);
+                  } else {
+                    setOpenDate(cellISO);
+                  }
+                }}
+                className="relative flex flex-col items-center justify-start gap-2 px-1 py-3 transition hover:brightness-110"
+                style={{
+                  minHeight: 96,
+                  background: theme.bg,
+                  borderLeft:
+                    i > 0 ? "1px solid rgba(107,79,58,0.30)" : undefined,
+                  // Today gets a glowing inset highlight
+                  boxShadow: isToday
+                    ? "inset 0 0 0 2px #d4a020, inset 0 0 14px rgba(212,160,32,0.20)"
+                    : `inset 0 0 0 1px ${theme.border}`,
+                  cursor: "pointer",
+                  opacity: isEmpty ? 0.6 : isRest ? 0.85 : 1,
+                }}
+                aria-label={`${w.full} ${cellISO}: ${
+                  isEmpty ? "unplanned" : isRest ? "rest" : theme.label
+                } (click to ${isPast || isToday ? "view" : "plan"})`}
+                title={
+                  isTemplate
+                    ? `From default ${w.full} template — click to override for ${cellISO}`
+                    : undefined
+                }
+              >
+                {/* Day name + date */}
+                <div
+                  className="text-[10px] uppercase tracking-[0.22em] font-bold leading-none"
+                  style={{
+                    ...fontDisplay,
+                    color: isToday ? "#f5d97a" : "#a89a85",
+                    textShadow: isToday
+                      ? "0 0 6px rgba(212,160,32,0.6)"
+                      : undefined,
+                  }}
+                >
+                  {w.short.toUpperCase()}
+                </div>
+                <div
+                  className="text-[9px] tabular-nums leading-none -mt-0.5"
+                  style={{
+                    ...fontDisplay,
+                    color: isToday ? "#f5d97a" : "rgba(216,210,194,0.5)",
+                    letterSpacing: "0.10em",
+                  }}
+                >
+                  {shortDateLabel(cellDate)}
+                </div>
+                {/* Workout label — preset name, REST, UNPLANNED, or CUSTOM */}
+                <div className="flex items-center gap-1.5 mt-1 px-1 max-w-full">
+                  {!isRest && !isEmpty && presetAccent && (
+                    <span
+                      aria-hidden
+                      className="seal shrink-0"
+                      style={{
+                        width: 6,
+                        height: 6,
+                        background: presetAccent,
+                        boxShadow: `0 0 4px ${presetAccent}`,
+                      }}
+                    />
+                  )}
+                  <div
+                    className="text-[11px] uppercase tracking-[0.16em] font-bold leading-tight truncate"
+                    style={{
+                      ...fontDisplay,
+                      color: theme.text,
+                      fontStyle: isRest || isEmpty ? "italic" : undefined,
+                    }}
+                    title={isRest ? "Rest day" : theme.label}
+                  >
+                    {isEmpty ? "+ Plan" : isRest ? "Rest" : theme.label}
+                  </div>
+                </div>
+                {/* Source marker — small dot in the upper-left when
+                    pulled from the default template rather than an
+                    explicit per-date assignment. */}
+                {isTemplate && (
+                  <span
+                    aria-hidden
+                    className="absolute top-1 left-1.5 text-[7px] uppercase font-bold leading-none"
+                    style={{
+                      ...fontDisplay,
+                      letterSpacing: "0.14em",
+                      color: "rgba(168,154,133,0.55)",
+                    }}
+                    title="From default weekly template"
+                  >
+                    TPL
+                  </span>
+                )}
+                {isToday && (
+                  <span
+                    className="absolute top-1 right-1.5 text-[8px] font-bold leading-none"
+                    style={{
+                      ...fontDisplay,
+                      letterSpacing: "0.18em",
+                      color: "#f5d97a",
+                      textShadow: "0 0 4px rgba(212,160,32,0.7)",
+                    }}
+                  >
+                    TODAY
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Copy-week toolbar */}
+      {!tableMissing && (
+        <div className="mt-2 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => copyWeek("previous")}
+            disabled={busy}
+            className="text-[10px] uppercase tracking-[0.22em] font-bold text-muted hover:text-gold transition disabled:opacity-40"
+            style={fontDisplay}
+            title="Copy this week's schedule to the previous week"
+          >
+            ← Copy to Last Week
+          </button>
+          <span className="text-muted/40">·</span>
+          <button
+            type="button"
+            onClick={() => copyWeek("next")}
+            disabled={busy}
+            className="text-[10px] uppercase tracking-[0.22em] font-bold text-muted hover:text-gold transition disabled:opacity-40"
+            style={fontDisplay}
+            title="Copy this week's schedule to the next week"
+          >
+            Copy to Next Week →
+          </button>
+        </div>
+      )}
+
+      {tableMissing && (
+        <div
+          className="mt-3 text-[11px] rounded p-2"
+          style={{
+            ...fontDisplay,
+            background: "rgba(139,24,24,0.18)",
+            border: "1px solid rgba(139,24,24,0.55)",
+            color: "#fecaca",
+          }}
+        >
+          ⚠ Per-date scheduling needs the <code>daily_schedule</code> table —
+          run <code>supabase/migrations/add_daily_schedule.sql</code> in your
+          Supabase SQL editor. Until then, this view shows the default weekly
+          template only.
+        </div>
+      )}
+
       {toast && (
-        <div className="mt-2 text-[10px] uppercase tracking-[0.22em] text-gold/85" style={fontDisplay}>
+        <div
+          className="mt-2 text-[10px] uppercase tracking-[0.22em] text-gold/85"
+          style={fontDisplay}
+        >
           {toast}
         </div>
       )}
+
+      {/* Day picker popover — schedules a specific date */}
+      {openDate !== null &&
+        (() => {
+          const dow = new Date(openDate + "T12:00:00").getDay();
+          const eff = effectiveForDate(openDate);
+          const full =
+            WEEK_ORDER.find((w) => w.dow === dow)?.full ?? "";
+          const current: ScheduleDayClient = {
+            day_of_week: dow,
+            is_rest: eff.isRest,
+            workout_type: eff.workoutType,
+            preset_id: eff.presetId,
+          };
+          const fromTemplate = eff.source === "template";
+          return (
+            <DayPickerModal
+              dow={dow}
+              fullName={full}
+              isoDate={openDate}
+              dateLabel={shortDateLabel(
+                new Date(openDate + "T12:00:00")
+              )}
+              current={current}
+              fromTemplate={fromTemplate}
+              presets={presets}
+              zoneLevels={zoneLevels}
+              onSet={(patch) => {
+                // Merge with the current effective values so the user
+                // never wipes a field they didn't touch.
+                const next = {
+                  is_rest: patch.is_rest ?? eff.isRest,
+                  workout_type:
+                    patch.workout_type !== undefined
+                      ? patch.workout_type
+                      : eff.workoutType,
+                  preset_id:
+                    patch.preset_id !== undefined
+                      ? patch.preset_id
+                      : eff.presetId,
+                };
+                // If REST is toggled on, clear any preset/type so the
+                // server-side row makes sense.
+                if (next.is_rest) {
+                  next.workout_type = null;
+                  next.preset_id = null;
+                }
+                void saveDay(openDate, next);
+              }}
+              onClear={() => void saveDay(openDate, null)}
+              onStartSession={() => {
+                const presetId = eff.presetId;
+                const p = presetId ? presetsById.get(presetId) : null;
+                if (p) {
+                  setOpenDate(null);
+                  setSessionPreset(p);
+                }
+              }}
+              onClose={() => setOpenDate(null)}
+            />
+          );
+        })()}
+
+      {monthOpen && (
+        <MonthPlannerModal
+          templateByDow={templateByDow}
+          dailyByDate={dailyByDate}
+          loggedDates={loggedDates}
+          presets={presets}
+          presetColorById={presetColorById}
+          onSelectDay={(iso) => {
+            setMonthOpen(false);
+            setDetailDate(iso);
+          }}
+          onClose={() => setMonthOpen(false)}
+        />
+      )}
+
+      {detailDate &&
+        (() => {
+          const eff = effectiveForDate(detailDate);
+          const linkedPreset = eff.presetId
+            ? presetsById.get(eff.presetId) ?? null
+            : null;
+          const accent = eff.presetId
+            ? presetColorById.get(eff.presetId) ?? null
+            : null;
+          const dow = new Date(detailDate + "T12:00:00").getDay();
+          const planned: ScheduleDayClient | null =
+            eff.source === "empty"
+              ? null
+              : {
+                  day_of_week: dow,
+                  is_rest: eff.isRest,
+                  workout_type: eff.workoutType,
+                  preset_id: eff.presetId,
+                };
+          return (
+            <WorkoutDayDetailModal
+              userId={userId}
+              date={detailDate}
+              loggedSets={setsByDate.get(detailDate) ?? []}
+              planned={planned}
+              preset={linkedPreset}
+              presetAccent={accent}
+              isToday={detailDate === todayISOStr}
+              onClose={() => setDetailDate(null)}
+              onSetsChanged={() => router.refresh()}
+              onLogRetroactive={() => {
+                const target = detailDate;
+                setDetailDate(null);
+                onOpenLogForDate(target);
+              }}
+              onStartSession={() => {
+                const p = linkedPreset;
+                setDetailDate(null);
+                if (p) setSessionPreset(p);
+              }}
+            />
+          );
+        })()}
+
+      {sessionPreset && (
+        <StartSessionModal
+          userId={userId}
+          preset={sessionPreset}
+          lastByExercise={lastByExercise}
+          onClose={() => setSessionPreset(null)}
+          onSaved={() => {
+            setSessionPreset(null);
+            router.refresh();
+          }}
+        />
+      )}
     </section>
+  );
+}
+
+// ─── Day-picker popover for the weekly schedule ──────────────────
+function DayPickerModal({
+  dow,
+  fullName,
+  isoDate,
+  dateLabel,
+  current,
+  fromTemplate,
+  presets,
+  zoneLevels,
+  onSet,
+  onClear,
+  onStartSession,
+  onClose,
+}: {
+  dow: number;
+  fullName: string;
+  isoDate?: string;
+  dateLabel: string;
+  current: ScheduleDayClient;
+  /** True when `current` was inherited from the default weekly template
+   *  rather than from a saved per-date override. */
+  fromTemplate?: boolean;
+  presets: WorkoutPreset[];
+  zoneLevels: Record<Zone, StrengthLevel>;
+  onSet: (patch: Partial<ScheduleDayClient>) => void;
+  /** Optional — when present, the modal can offer a "Use template"
+   *  button that removes the per-date override. */
+  onClear?: () => void;
+  onStartSession: () => void;
+  onClose: () => void;
+}) {
+  const router = useRouter();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(2px)" }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="tablet relative rounded p-5 w-full max-w-sm"
+        style={{
+          maxHeight: "calc(100vh - 32px)",
+          overflowY: "auto",
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 64px rgba(0,0,0,0.7)",
+        }}
+      >
+        <span className="corner-bl" />
+        <span className="corner-br" />
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <div
+              className="text-[9px] uppercase tracking-[0.32em] text-gold/80"
+              style={fontDisplay}
+            >
+              Schedule · {dateLabel}
+            </div>
+            <h3
+              className="text-lg font-bold mt-0.5 text-ink"
+              style={fontDisplay}
+            >
+              {fullName}
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Source banner — shows where the current values came from
+            and gives a one-click way to drop a per-date override. */}
+        {fromTemplate && (
+          <div
+            className="mb-3 rounded p-2 flex items-center justify-between gap-2 text-[10px] uppercase tracking-[0.18em]"
+            style={{
+              ...fontDisplay,
+              background: "rgba(184,134,11,0.08)",
+              border: "1px solid rgba(184,134,11,0.30)",
+              color: "rgba(232,213,163,0.75)",
+            }}
+          >
+            <span>From default {fullName} template</span>
+          </div>
+        )}
+        {!fromTemplate && onClear && (
+          <div className="mb-3 flex justify-end">
+            <button
+              type="button"
+              onClick={onClear}
+              className="text-[10px] uppercase tracking-[0.18em] text-muted hover:text-gold transition"
+              style={fontDisplay}
+              title="Remove this per-date override and fall back to the default template"
+            >
+              ↺ Use Default Template
+            </button>
+          </div>
+        )}
+
+        {/* REST DAY button — full-width selector */}
+        <button
+          type="button"
+          onClick={() =>
+            onSet({ is_rest: true, workout_type: null, preset_id: null })
+          }
+          className="w-full mb-3 transition"
+          style={{
+            ...fontDisplay,
+            fontSize: 12,
+            letterSpacing: "0.24em",
+            textTransform: "uppercase",
+            fontWeight: 800,
+            padding: "10px 14px",
+            borderRadius: 4,
+            background: current.is_rest
+              ? "linear-gradient(180deg, #6b4f3a 0%, #3a2a18 100%)"
+              : "rgba(20,14,30,0.55)",
+            color: current.is_rest ? "#f5e6c4" : "#9a9282",
+            border: `1px solid ${
+              current.is_rest
+                ? "rgba(184,134,11,0.55)"
+                : "rgba(107,79,58,0.45)"
+            }`,
+            boxShadow: current.is_rest
+              ? "inset 0 1px 0 rgba(255,255,255,0.10), inset 0 -2px 0 rgba(0,0,0,0.35), 0 0 10px rgba(184,134,11,0.20)"
+              : "inset 0 1px 0 rgba(255,255,255,0.04)",
+          }}
+        >
+          Rest Day
+        </button>
+
+        {/* Divider */}
+        <div className="relative flex items-center my-3">
+          <div className="flex-1 h-px bg-bronze-deep/40" />
+          <span
+            className="px-3 text-[9px] uppercase tracking-[0.32em] text-muted/70"
+            style={fontDisplay}
+          >
+            or pick a workout
+          </span>
+          <div className="flex-1 h-px bg-bronze-deep/40" />
+        </div>
+
+        {/* Preset cards — clicking selects the preset for this day */}
+        {presets.length === 0 ? (
+          <p
+            className="text-[11px] text-muted italic text-center py-2"
+            style={fontDisplay}
+          >
+            No presets yet. Create one in My Presets, or pick Custom below.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {presets.map((p, i) => {
+              const accent = presetColor(i);
+              const active =
+                !current.is_rest && current.preset_id === p.id;
+              const previewExercises = p.exercises
+                .slice(0, 3)
+                .map((e) => e.exerciseName);
+              const remaining = Math.max(0, p.exercises.length - 3);
+              return (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onSet({
+                        is_rest: false,
+                        workout_type: "custom",
+                        preset_id: p.id,
+                      })
+                    }
+                    className="w-full text-left transition hover:brightness-110"
+                    style={{
+                      padding: "10px 12px 10px 14px",
+                      background: active
+                        ? `linear-gradient(90deg, ${accent}40 0%, ${accent}15 100%)`
+                        : `linear-gradient(90deg, ${accent}1a 0%, ${accent}08 100%)`,
+                      borderTop: `1px solid ${accent}55`,
+                      borderRight: `1px solid ${accent}55`,
+                      borderBottom: `1px solid ${accent}55`,
+                      borderLeft: `4px solid ${accent}`,
+                      borderRadius: 4,
+                      boxShadow: active
+                        ? `inset 0 0 12px ${accent}40, 0 0 8px ${accent}33`
+                        : undefined,
+                    }}
+                  >
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span
+                        className="text-[13px] font-bold tracking-tight truncate"
+                        style={{
+                          ...fontDisplay,
+                          color: "#f5efe2",
+                          textShadow: "0 1px 0 rgba(0,0,0,0.5)",
+                        }}
+                      >
+                        {p.name}
+                      </span>
+                      <span
+                        className="text-[9px] uppercase tracking-[0.20em] shrink-0"
+                        style={{
+                          ...fontDisplay,
+                          color: "rgba(245,239,226,0.55)",
+                        }}
+                      >
+                        {p.exercises.length} ex
+                        {active ? " · selected" : ""}
+                      </span>
+                    </div>
+                    <div
+                      className="text-[10.5px] truncate mt-0.5"
+                      style={{
+                        color: "rgba(245,239,226,0.70)",
+                      }}
+                    >
+                      {previewExercises.length > 0
+                        ? previewExercises.join(" · ")
+                        : "No exercises yet"}
+                      {remaining > 0 && (
+                        <span style={{ color: "rgba(245,239,226,0.45)" }}>
+                          {" "}
+                          + {remaining} more
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+
+        {/* Custom / No Preset — bottom option */}
+        {(() => {
+          const customActive =
+            !current.is_rest && !current.preset_id;
+          return (
+            <button
+              type="button"
+              onClick={() =>
+                onSet({
+                  is_rest: false,
+                  workout_type: "custom",
+                  preset_id: null,
+                })
+              }
+              className="w-full mt-3 transition"
+              style={{
+                ...fontDisplay,
+                fontSize: 11,
+                letterSpacing: "0.22em",
+                textTransform: "uppercase",
+                fontWeight: 800,
+                padding: "10px 14px",
+                borderRadius: 4,
+                background: customActive
+                  ? "rgba(184,134,11,0.18)"
+                  : "rgba(20,14,30,0.55)",
+                color: customActive ? "#f0d68f" : "#9a9282",
+                border: `1px dashed ${
+                  customActive
+                    ? "rgba(184,134,11,0.65)"
+                    : "rgba(107,79,58,0.50)"
+                }`,
+              }}
+            >
+              Custom / No Preset
+            </button>
+          );
+        })()}
+
+        {/* Smart suggestions — when Custom is selected */}
+        {!current.is_rest &&
+          !current.preset_id &&
+          (() => {
+            const suggestions = buildSmartSuggestions(
+              "custom",
+              zoneLevels
+            );
+            if (suggestions.length === 0) return null;
+            return (
+              <div
+                className="mt-3 rounded p-3"
+                style={{
+                  background: "rgba(20,14,30,0.55)",
+                  border: "1px solid rgba(184,134,11,0.35)",
+                }}
+              >
+                <div
+                  className="text-[10px] uppercase tracking-[0.22em] mb-2 font-bold flex items-center gap-2"
+                  style={{ ...fontDisplay, color: "#d4a020" }}
+                >
+                  <span aria-hidden>✦</span>
+                  Suggested by Atlas
+                </div>
+                <ul className="space-y-1.5">
+                  {suggestions.map((s) => {
+                    const lvlLabel = LEVEL_LABEL[s.level];
+                    const lvlColor = LEVEL_COLOR[s.level];
+                    return (
+                      <li key={`${s.zone}-${s.exercise}`}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onClose();
+                            router.push(
+                              `/lifting?zone=${encodeURIComponent(
+                                s.zone
+                              )}&exercise=${encodeURIComponent(s.exercise)}`
+                            );
+                          }}
+                          className="lift w-full text-left rounded border border-bronze-deep/40 hover:border-bronze transition px-2.5 py-1.5"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="seal shrink-0"
+                              style={{
+                                width: 6,
+                                height: 6,
+                                background: lvlColor,
+                              }}
+                            />
+                            <span
+                              className="text-[12px] text-ink truncate flex-1"
+                              style={{ fontFamily: "inherit" }}
+                            >
+                              {s.exercise}
+                            </span>
+                            <span
+                              className="text-[9px] uppercase tracking-[0.16em] whitespace-nowrap"
+                              style={{
+                                ...fontDisplay,
+                                color: lvlColor,
+                              }}
+                            >
+                              {ZONE_LABEL[s.zone]} · {lvlLabel}
+                            </span>
+                          </div>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })()}
+
+        {/* Start session — when this day has a linked preset */}
+        {!current.is_rest && current.preset_id && (
+          <button
+            type="button"
+            onClick={onStartSession}
+            className="w-full mt-4 transition hover:brightness-110 active:translate-y-px"
+            style={{
+              ...fontDisplay,
+              fontSize: 12,
+              letterSpacing: "0.24em",
+              textTransform: "uppercase",
+              fontWeight: 800,
+              color: "#f5efe2",
+              padding: "10px 14px",
+              borderRadius: 4,
+              background:
+                "linear-gradient(180deg, #7747b0 0%, #3a2466 100%)",
+              border: "1px solid #7747b0",
+              boxShadow:
+                "inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.30), 0 0 12px rgba(119,71,176,0.55)",
+            }}
+          >
+            Start Session
+          </button>
+        )}
+
+        <button
+          type="button"
+          onClick={onClose}
+          className="btn-stone btn-stone-ghost w-full mt-3 text-[11px]"
+          style={{ padding: "0.6rem 0.9rem" }}
+        >
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Day-detail popup ─────────────────────────────────────────────
+// Read-only view of what was logged on a given date, or the planned
+// workout if nothing was logged. Triggered from any past/today cell
+// in My Week or the Monthly Planner.
+type EditingState = {
+  exercise: string;
+  muscleGroup: string;
+  rows: Array<{
+    setId: string | null; // null = new set not yet inserted
+    weight: string;
+    reps: string;
+    sets: string;
+    deleted?: boolean;
+  }>;
+};
+
+function WorkoutDayDetailModal({
+  userId,
+  date,
+  loggedSets,
+  planned,
+  preset,
+  presetAccent,
+  isToday,
+  onClose,
+  onSetsChanged,
+  onLogRetroactive,
+  onStartSession,
+}: {
+  userId: string;
+  date: string;
+  loggedSets: WorkoutDaySet[];
+  planned: ScheduleDayClient | null;
+  preset: WorkoutPreset | null;
+  presetAccent: string | null;
+  isToday: boolean;
+  onClose: () => void;
+  onSetsChanged: () => void;
+  onLogRetroactive: () => void;
+  onStartSession: () => void;
+}) {
+  const supabase = createSupabaseBrowserClient();
+  // Local mutable copy so the popup updates immediately after edits
+  // without waiting for the page-level router.refresh roundtrip.
+  const [localSets, setLocalSets] = useState<WorkoutDaySet[]>(loggedSets);
+  useEffect(() => setLocalSets(loggedSets), [loggedSets]);
+
+  const [editing, setEditing] = useState<EditingState | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [innerToast, setInnerToast] = useState<string | null>(null);
+  useEffect(() => {
+    if (!innerToast) return;
+    const t = setTimeout(() => setInnerToast(null), 1500);
+    return () => clearTimeout(t);
+  }, [innerToast]);
+
+  // Re-fetch this day's sets from the DB so the popup mirrors what
+  // actually persisted (used after every mutation).
+  async function refetchDay() {
+    const { data, error } = await supabase
+      .from("workout_sets")
+      .select(
+        "id, workout_id, exercise_name, muscle_group, weight_lbs, reps, sets, workouts!inner(user_id, date)"
+      )
+      .eq("workouts.user_id", userId)
+      .eq("workouts.date", date);
+    if (error) {
+      console.warn("[refetchDay] error:", error.message);
+      return;
+    }
+    const fresh: WorkoutDaySet[] = (data ?? []).map((r: any) => ({
+      workoutId: String(r.workout_id ?? ""),
+      setId: String(r.id ?? ""),
+      exercise: String(r.exercise_name ?? ""),
+      muscleGroup: String(r.muscle_group ?? ""),
+      weight: Number(r.weight_lbs ?? 0),
+      reps: Number(r.reps ?? 0),
+      sets: Number(r.sets ?? 0),
+      date,
+    }));
+    setLocalSets(fresh);
+    onSetsChanged();
+  }
+
+  // Find or create a workout row for this date so we have a workout_id
+  // to attach new sets to.
+  async function ensureWorkoutId(): Promise<string | null> {
+    const existing = await supabase
+      .from("workouts")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("date", date)
+      .order("created_at", { ascending: true })
+      .limit(1);
+    if (!existing.error && existing.data && existing.data.length > 0) {
+      return String(existing.data[0].id);
+    }
+    const created = await supabase
+      .from("workouts")
+      .insert({ user_id: userId, date, notes: null })
+      .select("id")
+      .single();
+    if (created.error) {
+      console.error("[ensureWorkoutId] failed:", created.error.message);
+      return null;
+    }
+    return String(created.data.id);
+  }
+
+  function startEdit(group: { exercise: string; muscleGroup: string; rows: WorkoutDaySet[] }) {
+    setAdding(false);
+    setEditing({
+      exercise: group.exercise,
+      muscleGroup: group.muscleGroup,
+      rows: group.rows.map((r) => ({
+        setId: r.setId,
+        weight: String(r.weight),
+        reps: String(r.reps),
+        sets: String(r.sets),
+      })),
+    });
+  }
+
+  function patchEditRow(idx: number, patch: Partial<EditingState["rows"][number]>) {
+    setEditing((cur) =>
+      cur
+        ? {
+            ...cur,
+            rows: cur.rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)),
+          }
+        : cur
+    );
+  }
+
+  function addEditRow() {
+    setEditing((cur) =>
+      cur
+        ? {
+            ...cur,
+            rows: [
+              ...cur.rows,
+              { setId: null, weight: "", reps: "", sets: "" },
+            ],
+          }
+        : cur
+    );
+  }
+
+  function markEditRowDeleted(idx: number) {
+    setEditing((cur) => {
+      if (!cur) return cur;
+      const target = cur.rows[idx];
+      // Brand-new (unsaved) rows can be removed outright.
+      if (!target.setId) {
+        return { ...cur, rows: cur.rows.filter((_, i) => i !== idx) };
+      }
+      return {
+        ...cur,
+        rows: cur.rows.map((r, i) =>
+          i === idx ? { ...r, deleted: true } : r
+        ),
+      };
+    });
+  }
+
+  async function commitEdit() {
+    if (!editing) return;
+    setBusy(true);
+    try {
+      const exerciseLookup = new Map(
+        EXERCISE_OPTIONS.map((e) => [e.name, e])
+      );
+      let workoutId: string | null = null;
+
+      for (const r of editing.rows) {
+        const w = Number(r.weight);
+        const reps = Number(r.reps);
+        const sets = Number(r.sets);
+        if (r.deleted && r.setId) {
+          const del = await supabase
+            .from("workout_sets")
+            .delete()
+            .eq("id", r.setId);
+          if (del.error) throw del.error;
+        } else if (r.setId) {
+          if (!(w > 0 && reps > 0 && sets > 0)) continue;
+          const upd = await supabase
+            .from("workout_sets")
+            .update({
+              weight_lbs: w,
+              reps,
+              sets,
+            })
+            .eq("id", r.setId);
+          if (upd.error) throw upd.error;
+        } else if (!r.deleted && w > 0 && reps > 0 && sets > 0) {
+          if (!workoutId) {
+            workoutId = await ensureWorkoutId();
+            if (!workoutId) throw new Error("Could not create workout row");
+          }
+          const ex = exerciseLookup.get(editing.exercise);
+          const ins = await supabase.from("workout_sets").insert({
+            workout_id: workoutId,
+            exercise_name: editing.exercise,
+            muscle_group: editing.muscleGroup,
+            weight_lbs: w,
+            reps,
+            sets,
+            primary_muscle: ex?.muscles?.[0] ?? null,
+          });
+          if (ins.error) {
+            // Older DB without primary_muscle column — retry without it.
+            const code = (ins.error as any).code;
+            if (
+              code === "42703" ||
+              code === "PGRST204" ||
+              /primary_muscle/i.test(ins.error.message ?? "")
+            ) {
+              const retry = await supabase.from("workout_sets").insert({
+                workout_id: workoutId,
+                exercise_name: editing.exercise,
+                muscle_group: editing.muscleGroup,
+                weight_lbs: w,
+                reps,
+                sets,
+              });
+              if (retry.error) throw retry.error;
+            } else {
+              throw ins.error;
+            }
+          }
+        }
+      }
+
+      setEditing(null);
+      setInnerToast("Saved");
+      await refetchDay();
+    } catch (e: any) {
+      setInnerToast(`Save failed: ${e?.message ?? "unknown"}`);
+      console.error("[commitEdit]", e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteExercise(exercise: string) {
+    const setIds = localSets
+      .filter((s) => s.exercise === exercise)
+      .map((s) => s.setId);
+    if (setIds.length === 0) return;
+    if (
+      !window.confirm(
+        `Remove all ${setIds.length} set${
+          setIds.length === 1 ? "" : "s"
+        } for "${exercise}"?`
+      )
+    )
+      return;
+    setBusy(true);
+    try {
+      const { error } = await supabase
+        .from("workout_sets")
+        .delete()
+        .in("id", setIds);
+      if (error) throw error;
+      setInnerToast("Deleted");
+      if (editing?.exercise === exercise) setEditing(null);
+      await refetchDay();
+    } catch (e: any) {
+      setInnerToast(`Delete failed: ${e?.message ?? "unknown"}`);
+      console.error("[deleteExercise]", e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Add-exercise form state
+  const [addZone, setAddZone] = useState<Zone | "">("");
+  const [addExName, setAddExName] = useState("");
+  const [addWeight, setAddWeight] = useState("");
+  const [addReps, setAddReps] = useState("");
+  const [addSets, setAddSets] = useState("");
+  const addExerciseList = useMemo(
+    () => (addZone ? exercisesForZone(addZone) : []),
+    [addZone]
+  );
+  function resetAddForm() {
+    setAddZone("");
+    setAddExName("");
+    setAddWeight("");
+    setAddReps("");
+    setAddSets("");
+  }
+  async function commitAdd() {
+    const w = Number(addWeight);
+    const reps = Number(addReps);
+    const sets = Number(addSets);
+    if (!addZone || !addExName || w <= 0 || reps <= 0 || sets <= 0) {
+      setInnerToast("Fill all fields with values > 0");
+      return;
+    }
+    setBusy(true);
+    try {
+      const workoutId = await ensureWorkoutId();
+      if (!workoutId) throw new Error("Could not create workout row");
+      const ex = EXERCISE_OPTIONS.find((e) => e.name === addExName);
+      const ins = await supabase.from("workout_sets").insert({
+        workout_id: workoutId,
+        exercise_name: addExName,
+        muscle_group: addZone,
+        weight_lbs: w,
+        reps,
+        sets,
+        primary_muscle: ex?.muscles?.[0] ?? null,
+      });
+      if (ins.error) {
+        const code = (ins.error as any).code;
+        if (
+          code === "42703" ||
+          code === "PGRST204" ||
+          /primary_muscle/i.test(ins.error.message ?? "")
+        ) {
+          const retry = await supabase.from("workout_sets").insert({
+            workout_id: workoutId,
+            exercise_name: addExName,
+            muscle_group: addZone,
+            weight_lbs: w,
+            reps,
+            sets,
+          });
+          if (retry.error) throw retry.error;
+        } else {
+          throw ins.error;
+        }
+      }
+      setInnerToast("Added");
+      setAdding(false);
+      resetAddForm();
+      await refetchDay();
+    } catch (e: any) {
+      setInnerToast(`Add failed: ${e?.message ?? "unknown"}`);
+      console.error("[commitAdd]", e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const longLabel = useMemo(() => {
+    const d = new Date(date + "T12:00:00");
+    return d.toLocaleDateString(undefined, {
+      weekday: "long",
+      month: "long",
+      day: "numeric",
+    });
+  }, [date]);
+
+  // Group logged sets by exercise (driven by localSets so edits show up
+  // immediately after a save without waiting for parent refresh).
+  const byExercise = useMemo(() => {
+    const m = new Map<
+      string,
+      {
+        exercise: string;
+        muscleGroup: string;
+        rows: WorkoutDaySet[];
+        volume: number;
+        totalSets: number;
+      }
+    >();
+    for (const s of localSets) {
+      const key = s.exercise;
+      const cur =
+        m.get(key) ??
+        {
+          exercise: s.exercise,
+          muscleGroup: s.muscleGroup,
+          rows: [],
+          volume: 0,
+          totalSets: 0,
+        };
+      cur.rows.push(s);
+      cur.volume += s.weight * s.reps * s.sets;
+      cur.totalSets += s.sets;
+      m.set(key, cur);
+    }
+    return Array.from(m.values());
+  }, [localSets]);
+
+  const totalSets = byExercise.reduce((acc, e) => acc + e.totalSets, 0);
+  const muscles = useMemo(() => {
+    const s = new Set<string>();
+    for (const e of byExercise) if (e.muscleGroup) s.add(e.muscleGroup);
+    return Array.from(s);
+  }, [byExercise]);
+
+  const hasLogged = byExercise.length > 0;
+  const status = hasLogged
+    ? "logged"
+    : isToday
+    ? "today-empty"
+    : planned?.is_rest
+    ? "rest"
+    : "missed";
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      onClick={onClose}
+      role="dialog"
+      aria-modal
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{
+          background: "rgba(0,0,0,0.65)",
+          backdropFilter: "blur(2px)",
+        }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="day-detail-modal relative w-full"
+        style={{
+          maxWidth: 480,
+          maxHeight: "calc(100vh - 32px)",
+          overflowY: "auto",
+          background: "var(--noise-bg), #0a0a14",
+          color: "#d8d2c2",
+          border: "1px solid rgba(107,79,58,0.55)",
+          borderTop: presetAccent
+            ? `4px solid ${presetAccent}`
+            : "4px solid rgba(184,134,11,0.55)",
+          borderRadius: 6,
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 64px rgba(0,0,0,0.7)",
+          padding: "20px 22px",
+        }}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            <div
+              className="text-[9px] uppercase tracking-[0.32em] text-gold/80"
+              style={fontDisplay}
+            >
+              {isToday ? "Today" : "Past Day"}
+            </div>
+            <h2
+              className="text-xl font-bold mt-0.5 text-ink truncate"
+              style={fontDisplay}
+            >
+              {longLabel}
+            </h2>
+            {/* Planned line */}
+            {planned && !planned.is_rest && (
+              <div
+                className="text-[11px] mt-1 inline-flex items-center gap-2"
+                style={{
+                  ...fontDisplay,
+                  color: "rgba(216,210,194,0.65)",
+                }}
+              >
+                {presetAccent && (
+                  <span
+                    aria-hidden
+                    style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: presetAccent,
+                      boxShadow: `0 0 4px ${presetAccent}`,
+                    }}
+                  />
+                )}
+                Planned: {preset?.name ?? "Custom"}
+              </div>
+            )}
+            {planned?.is_rest && (
+              <div
+                className="text-[11px] mt-1 italic"
+                style={{
+                  ...fontDisplay,
+                  color: "rgba(155,146,130,0.85)",
+                }}
+              >
+                Planned: Rest day
+              </div>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Status badge */}
+            {status === "logged" && (
+              <CheckIcon size={18} color="#22c55e" />
+            )}
+            {status === "missed" && (
+              <span
+                className="text-[16px]"
+                style={{ color: "#d4a020" }}
+                aria-label="Nothing logged"
+              >
+                ⚠
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center"
+              aria-label="Close"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+
+        <div
+          className="h-px mb-4"
+          style={{
+            background:
+              "linear-gradient(90deg, transparent, rgba(184,134,11,0.5) 50%, transparent)",
+          }}
+        />
+
+        {/* Body */}
+        {hasLogged ? (
+          <>
+            <div
+              className="text-[10px] uppercase tracking-[0.24em] mb-3 font-bold"
+              style={{ ...fontDisplay, color: "#d4a020" }}
+            >
+              What You Did
+            </div>
+            <ul className="space-y-3">
+              {byExercise.map((g) => {
+                const isEditing = editing?.exercise === g.exercise;
+                return (
+                  <li
+                    key={g.exercise}
+                    className="rounded p-3"
+                    style={{
+                      background: "rgba(20,14,30,0.55)",
+                      border: isEditing
+                        ? "1px solid rgba(168,85,247,0.55)"
+                        : "1px solid rgba(107,79,58,0.30)",
+                      boxShadow: isEditing
+                        ? "0 0 12px rgba(168,85,247,0.20)"
+                        : undefined,
+                    }}
+                  >
+                    <div className="flex items-baseline justify-between gap-2 mb-1.5">
+                      <div
+                        className="font-bold text-[13px] truncate flex-1"
+                        style={{ ...fontDisplay, color: "#f5efe2" }}
+                      >
+                        {g.exercise}
+                      </div>
+                      <div
+                        className="text-[9px] uppercase tracking-[0.18em] shrink-0"
+                        style={{
+                          ...fontDisplay,
+                          color: zoneDotColor(g.muscleGroup),
+                        }}
+                      >
+                        {ZONE_LABEL[g.muscleGroup as Zone] ?? g.muscleGroup}
+                      </div>
+                      {/* Edit/Delete pencil + trash */}
+                      {!isEditing && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => startEdit(g)}
+                            disabled={busy}
+                            className="w-6 h-6 flex items-center justify-center transition hover:brightness-125 disabled:opacity-40"
+                            title="Edit sets"
+                            aria-label={`Edit ${g.exercise}`}
+                            style={{ color: "rgba(216,210,194,0.65)" }}
+                          >
+                            <PencilGlyph />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => deleteExercise(g.exercise)}
+                            disabled={busy}
+                            className="w-6 h-6 flex items-center justify-center transition hover:brightness-125 disabled:opacity-40"
+                            title={`Delete all sets for ${g.exercise}`}
+                            aria-label={`Delete ${g.exercise}`}
+                            style={{ color: "rgba(220,80,80,0.65)" }}
+                          >
+                            <TrashGlyph />
+                          </button>
+                        </>
+                      )}
+                    </div>
+
+                    {isEditing && editing ? (
+                      <div className="space-y-2">
+                        {editing.rows.map((r, idx) => {
+                          if (r.deleted) return null;
+                          return (
+                            <div
+                              key={`edit-${idx}`}
+                              className="grid grid-cols-[1fr_8px_1fr_8px_1fr_28px] gap-1.5 items-center"
+                            >
+                              <input
+                                type="number"
+                                min="0"
+                                step="0.5"
+                                value={r.weight}
+                                onChange={(e) =>
+                                  patchEditRow(idx, { weight: e.target.value })
+                                }
+                                className="w-full text-[12px] text-center tabular-nums"
+                                style={{ minHeight: 32, padding: "4px 6px" }}
+                                aria-label="Weight"
+                                placeholder="lb"
+                              />
+                              <span
+                                className="text-center text-muted/70"
+                                aria-hidden
+                              >
+                                ×
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={r.reps}
+                                onChange={(e) =>
+                                  patchEditRow(idx, { reps: e.target.value })
+                                }
+                                className="w-full text-[12px] text-center tabular-nums"
+                                style={{ minHeight: 32, padding: "4px 6px" }}
+                                aria-label="Reps"
+                                placeholder="reps"
+                              />
+                              <span
+                                className="text-center text-muted/70"
+                                aria-hidden
+                              >
+                                ×
+                              </span>
+                              <input
+                                type="number"
+                                min="0"
+                                value={r.sets}
+                                onChange={(e) =>
+                                  patchEditRow(idx, { sets: e.target.value })
+                                }
+                                className="w-full text-[12px] text-center tabular-nums"
+                                style={{ minHeight: 32, padding: "4px 6px" }}
+                                aria-label="Sets"
+                                placeholder="sets"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => markEditRowDeleted(idx)}
+                                className="w-7 h-7 flex items-center justify-center rounded transition hover:brightness-125"
+                                title="Remove this set"
+                                aria-label="Remove set"
+                                style={{ color: "rgba(220,80,80,0.75)" }}
+                              >
+                                <TrashGlyph />
+                              </button>
+                            </div>
+                          );
+                        })}
+                        <div className="flex items-center gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={addEditRow}
+                            disabled={busy}
+                            className="text-[10px] uppercase tracking-[0.18em] py-1.5 px-3 rounded border border-bronze-deep/50 text-muted hover:text-gold hover:border-bronze transition disabled:opacity-40"
+                            style={fontDisplay}
+                          >
+                            + Add Set
+                          </button>
+                          <div className="flex-1" />
+                          <button
+                            type="button"
+                            onClick={() => setEditing(null)}
+                            disabled={busy}
+                            className="text-[10px] uppercase tracking-[0.18em] py-1.5 px-3 rounded text-muted hover:text-ink transition disabled:opacity-40"
+                            style={fontDisplay}
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={commitEdit}
+                            disabled={busy}
+                            className="text-[10px] uppercase tracking-[0.20em] py-1.5 px-4 rounded font-bold transition hover:brightness-110 disabled:opacity-40"
+                            style={{
+                              ...fontDisplay,
+                              color: "#f5efe2",
+                              background:
+                                "linear-gradient(180deg, #7747b0, #3a2466)",
+                              border: "1px solid #7747b0",
+                              boxShadow:
+                                "inset 0 1px 0 rgba(255,255,255,0.18), 0 0 8px rgba(119,71,176,0.45)",
+                            }}
+                          >
+                            {busy ? "Saving…" : "Save"}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <ul className="space-y-0.5">
+                          {g.rows.map((r, i) => (
+                            <li
+                              key={`${r.setId}-${i}`}
+                              className="text-[12px] tabular-nums flex items-center gap-2"
+                              style={{ color: "rgba(216,210,194,0.85)" }}
+                            >
+                              <span
+                                aria-hidden
+                                style={{
+                                  color: "rgba(184,134,11,0.65)",
+                                  fontFamily:
+                                    "var(--font-cinzel), Georgia, serif",
+                                }}
+                              >
+                                →
+                              </span>
+                              <span
+                                style={{ color: "#f5efe2", fontWeight: 600 }}
+                              >
+                                {r.weight} × {r.reps}
+                              </span>
+                              <span
+                                style={{ color: "rgba(216,210,194,0.55)" }}
+                              >
+                                ×{r.sets} set{r.sets === 1 ? "" : "s"}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                        <div
+                          className="text-[10px] uppercase tracking-[0.20em] mt-2 font-semibold"
+                          style={{ ...fontDisplay, color: "#b8860b" }}
+                        >
+                          Volume:{" "}
+                          <span className="tabular-nums">
+                            {Math.round(g.volume).toLocaleString()} lb
+                          </span>
+                        </div>
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+
+            {/* Totals + muscles */}
+            <div
+              className="mt-4 grid grid-cols-2 gap-2 text-[10px] uppercase tracking-[0.22em]"
+              style={{ ...fontDisplay, color: "rgba(216,210,194,0.7)" }}
+            >
+              <div className="flex items-center gap-2">
+                <span style={{ color: "#9a9282" }}>Exercises</span>
+                <span
+                  className="tabular-nums font-bold"
+                  style={{ color: "#f5efe2" }}
+                >
+                  {byExercise.length}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span style={{ color: "#9a9282" }}>Total sets</span>
+                <span
+                  className="tabular-nums font-bold"
+                  style={{ color: "#f5efe2" }}
+                >
+                  {totalSets}
+                </span>
+              </div>
+            </div>
+            {muscles.length > 0 && (
+              <div className="mt-3 flex items-center gap-2 flex-wrap">
+                <span
+                  className="text-[9px] uppercase tracking-[0.22em]"
+                  style={{ ...fontDisplay, color: "#9a9282" }}
+                >
+                  Muscles trained:
+                </span>
+                {muscles.map((m) => (
+                  <span
+                    key={m}
+                    className="inline-flex items-center gap-1 text-[10px]"
+                    style={{
+                      ...fontDisplay,
+                      color: "rgba(216,210,194,0.8)",
+                    }}
+                  >
+                    <span
+                      aria-hidden
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: "50%",
+                        background: zoneDotColor(m),
+                        boxShadow: `0 0 4px ${zoneDotColor(m)}`,
+                      }}
+                    />
+                    {ZONE_LABEL[m as Zone] ?? m}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Add Exercise — inline form or trigger button */}
+            <div className="mt-4">
+              {adding ? (
+                <div
+                  className="rounded p-3 space-y-2"
+                  style={{
+                    background: "rgba(20,14,30,0.55)",
+                    border: "1px solid rgba(184,134,11,0.45)",
+                    boxShadow: "0 0 10px rgba(184,134,11,0.10)",
+                  }}
+                >
+                  <div
+                    className="text-[10px] uppercase tracking-[0.22em] font-bold"
+                    style={{ ...fontDisplay, color: "#d4a020" }}
+                  >
+                    Add Exercise
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <select
+                      value={addZone}
+                      onChange={(e) => {
+                        setAddZone((e.target.value || "") as Zone | "");
+                        setAddExName("");
+                      }}
+                      className="w-full text-[12px]"
+                      style={{ minHeight: 32 }}
+                    >
+                      <option value="">Muscle group</option>
+                      {ZONES.map((z) => (
+                        <option key={z} value={z}>
+                          {ZONE_LABEL[z]}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      value={addExName}
+                      onChange={(e) => setAddExName(e.target.value)}
+                      disabled={!addZone}
+                      className="w-full text-[12px]"
+                      style={{ minHeight: 32 }}
+                    >
+                      <option value="">Exercise</option>
+                      {addExerciseList.map((ex) => (
+                        <option key={ex.name} value={ex.name}>
+                          {ex.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.5"
+                      value={addWeight}
+                      onChange={(e) => setAddWeight(e.target.value)}
+                      placeholder="Weight"
+                      className="w-full text-[12px] text-center tabular-nums"
+                      style={{ minHeight: 32 }}
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      value={addReps}
+                      onChange={(e) => setAddReps(e.target.value)}
+                      placeholder="Reps"
+                      className="w-full text-[12px] text-center tabular-nums"
+                      style={{ minHeight: 32 }}
+                    />
+                    <input
+                      type="number"
+                      min="0"
+                      value={addSets}
+                      onChange={(e) => setAddSets(e.target.value)}
+                      placeholder="Sets"
+                      className="w-full text-[12px] text-center tabular-nums"
+                      style={{ minHeight: 32 }}
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAdding(false);
+                        resetAddForm();
+                      }}
+                      disabled={busy}
+                      className="text-[10px] uppercase tracking-[0.18em] py-1.5 px-3 rounded text-muted hover:text-ink transition disabled:opacity-40"
+                      style={fontDisplay}
+                    >
+                      Cancel
+                    </button>
+                    <div className="flex-1" />
+                    <button
+                      type="button"
+                      onClick={commitAdd}
+                      disabled={busy}
+                      className="text-[10px] uppercase tracking-[0.20em] py-1.5 px-4 rounded font-bold transition hover:brightness-110 disabled:opacity-40"
+                      style={{
+                        ...fontDisplay,
+                        color: "#f5efe2",
+                        background:
+                          "linear-gradient(180deg, #7747b0, #3a2466)",
+                        border: "1px solid #7747b0",
+                        boxShadow:
+                          "inset 0 1px 0 rgba(255,255,255,0.18), 0 0 8px rgba(119,71,176,0.45)",
+                      }}
+                    >
+                      {busy ? "Adding…" : "Add"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditing(null);
+                    setAdding(true);
+                  }}
+                  disabled={busy}
+                  className="w-full transition hover:brightness-110"
+                  style={{
+                    ...fontDisplay,
+                    fontSize: 11,
+                    letterSpacing: "0.22em",
+                    textTransform: "uppercase",
+                    fontWeight: 800,
+                    padding: "10px 14px",
+                    borderRadius: 4,
+                    background: "rgba(184,134,11,0.10)",
+                    border: "1px dashed rgba(184,134,11,0.55)",
+                    color: "#d4a020",
+                  }}
+                >
+                  + Add Exercise
+                </button>
+              )}
+            </div>
+
+            {innerToast && (
+              <div
+                className="mt-3 text-center text-[11px] uppercase tracking-[0.20em]"
+                style={{ ...fontDisplay, color: "#d4a020" }}
+              >
+                {innerToast}
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="text-center py-3">
+            <p
+              className="text-[13px] italic mb-3"
+              style={{ ...fontDisplay, color: "rgba(216,210,194,0.7)" }}
+            >
+              {status === "rest"
+                ? "Rest day — nothing planned, nothing logged."
+                : status === "today-empty"
+                ? "No exercises logged yet today."
+                : "No workout logged this day."}
+            </p>
+            {/* Action button */}
+            {isToday && preset ? (
+              <button
+                type="button"
+                onClick={onStartSession}
+                className="w-full transition hover:brightness-110 active:translate-y-px"
+                style={{
+                  ...fontDisplay,
+                  fontSize: 12,
+                  letterSpacing: "0.24em",
+                  textTransform: "uppercase",
+                  fontWeight: 800,
+                  color: "#f5efe2",
+                  padding: "10px 14px",
+                  borderRadius: 4,
+                  background:
+                    "linear-gradient(180deg, #7747b0 0%, #3a2466 100%)",
+                  border: "1px solid #7747b0",
+                  boxShadow:
+                    "inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.30), 0 0 12px rgba(119,71,176,0.55)",
+                }}
+              >
+                Start Session
+              </button>
+            ) : (
+              !planned?.is_rest && (
+                <button
+                  type="button"
+                  onClick={onLogRetroactive}
+                  className="w-full transition hover:brightness-110 active:translate-y-px"
+                  style={{
+                    ...fontDisplay,
+                    fontSize: 12,
+                    letterSpacing: "0.24em",
+                    textTransform: "uppercase",
+                    fontWeight: 800,
+                    color: "#f5efe2",
+                    padding: "10px 14px",
+                    borderRadius: 4,
+                    background:
+                      "linear-gradient(180deg, #b8860b 0%, #6a4f08 100%)",
+                    border: "1px solid #b8860b",
+                    boxShadow:
+                      "inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -2px 0 rgba(0,0,0,0.30), 0 0 12px rgba(184,134,11,0.45)",
+                  }}
+                >
+                  {isToday ? "Log Session" : "Log Retroactively"}
+                </button>
+              )
+            )}
+          </div>
+        )}
+
+        {/* Slide-up animation on mobile */}
+        <style jsx>{`
+          .day-detail-modal {
+            animation: dayDetailFadeIn 200ms ease-out;
+          }
+          @keyframes dayDetailFadeIn {
+            from {
+              opacity: 0;
+              transform: translateY(12px) scale(0.98);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0) scale(1);
+            }
+          }
+          @media (max-width: 640px) {
+            .day-detail-modal {
+              animation: dayDetailSlideUp 240ms cubic-bezier(0.34, 1.4, 0.64, 1);
+            }
+            @keyframes dayDetailSlideUp {
+              from {
+                opacity: 0;
+                transform: translateY(40px);
+              }
+              to {
+                opacity: 1;
+                transform: translateY(0);
+              }
+            }
+          }
+        `}</style>
+      </div>
+    </div>
+  );
+}
+
+// Color per muscle group for the dot indicators (reused from Dashboard).
+function zoneDotColor(zone: string): string {
+  const map: Record<string, string> = {
+    chest: "#a855f7",
+    back: "#3a5a8a",
+    shoulders: "#f59e0b",
+    biceps: "#22c55e",
+    triceps: "#ef4444",
+    forearms: "#8b7355",
+    abs: "#a0432a",
+    quads: "#5b3993",
+    hamstrings: "#3b82f6",
+    glutes: "#a83232",
+    calves: "#3d6b3a",
+  };
+  return map[zone] ?? "#5a5246";
+}
+
+// ─── Monthly planner modal ────────────────────────────────────────
+// Bird's-eye view of the current week template projected across the
+// whole month, with logged-vs-planned markers per day.
+function MonthPlannerModal({
+  templateByDow,
+  dailyByDate,
+  loggedDates,
+  presets,
+  presetColorById,
+  onSelectDay,
+  onClose,
+}: {
+  templateByDow: Record<number, ScheduleDayClient>;
+  /** Daily overrides for the *current* week (already loaded). The
+   *  month view fetches its own wider range and merges this in. */
+  dailyByDate: Record<string, DailyEntry>;
+  loggedDates: Set<string>;
+  presets: WorkoutPreset[];
+  presetColorById: Map<string, string>;
+  onSelectDay: (iso: string) => void;
+  onClose: () => void;
+}) {
+  const today = useMemo(() => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }, []);
+  const todayISOStr = useMemo(() => isoForDate(today), [today]);
+  const [view, setView] = useState({
+    year: today.getFullYear(),
+    month: today.getMonth(),
+  });
+  // Month-wide daily overrides. Fetched lazily whenever the viewed
+  // month changes. Falls back to the seed `dailyByDate` (the week
+  // the user already had open) so something useful renders before
+  // the fetch resolves.
+  const [monthDaily, setMonthDaily] = useState<Record<string, DailyEntry>>(
+    () => ({ ...dailyByDate })
+  );
+  const presetsById = useMemo(() => {
+    const m = new Map<string, WorkoutPreset>();
+    for (const p of presets) m.set(p.id, p);
+    return m;
+  }, [presets]);
+
+  useEffect(() => {
+    const start = `${view.year}-${String(view.month + 1).padStart(2, "0")}-01`;
+    const lastDay = new Date(view.year, view.month + 1, 0).getDate();
+    const end = `${view.year}-${String(view.month + 1).padStart(2, "0")}-${String(
+      lastDay
+    ).padStart(2, "0")}`;
+    let cancelled = false;
+    fetch(`/api/daily-schedule?from=${start}&to=${end}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        const rows: DailyEntry[] = Array.isArray(data?.days) ? data.days : [];
+        const next: Record<string, DailyEntry> = { ...dailyByDate };
+        for (const r of rows) next[r.date] = r;
+        setMonthDaily(next);
+      })
+      .catch(() => {
+        // Keep whatever we already had; the seed dailyByDate is at least
+        // partially correct.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view.year, view.month, dailyByDate]);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const monthLabel = new Date(view.year, view.month, 1).toLocaleDateString(
+    undefined,
+    { month: "long", year: "numeric" }
+  );
+  const grid = useMemo(() => buildMonthGrid(view.year, view.month), [view]);
+
+  function shiftMonth(delta: number) {
+    const d = new Date(view.year, view.month + delta, 1);
+    setView({ year: d.getFullYear(), month: d.getMonth() });
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(2px)" }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="tablet relative rounded p-5 w-full max-w-lg"
+        style={{
+          boxShadow:
+            "inset 0 1px 0 rgba(255,255,255,0.05), 0 24px 64px rgba(0,0,0,0.7)",
+        }}
+      >
+        <span className="corner-bl" />
+        <span className="corner-br" />
+
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <div
+              className="text-[9px] uppercase tracking-[0.32em] text-gold/80"
+              style={fontDisplay}
+            >
+              Monthly Plan
+            </div>
+            <h3
+              className="text-lg font-bold mt-0.5 text-ink flex items-center gap-3"
+              style={fontDisplay}
+            >
+              <button
+                type="button"
+                onClick={() => shiftMonth(-1)}
+                className="text-muted hover:text-ink w-6 h-6 flex items-center justify-center text-base"
+                aria-label="Previous month"
+              >
+                ‹
+              </button>
+              {monthLabel}
+              <button
+                type="button"
+                onClick={() => shiftMonth(1)}
+                className="text-muted hover:text-ink w-6 h-6 flex items-center justify-center text-base"
+                aria-label="Next month"
+              >
+                ›
+              </button>
+            </h3>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-muted hover:text-ink text-2xl w-8 h-8 flex items-center justify-center"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* Day-of-week header */}
+        <div className="grid grid-cols-7 gap-1 mb-1">
+          {["S", "M", "T", "W", "T", "F", "S"].map((d, i) => (
+            <div
+              key={i}
+              className="text-[9px] uppercase tracking-[0.18em] text-muted/60 text-center py-1"
+              style={fontDisplay}
+            >
+              {d}
+            </div>
+          ))}
+        </div>
+
+        {/* Cells */}
+        <div className="grid grid-cols-7 gap-1">
+          {grid.map((cell, i) => {
+            if (!cell) {
+              return (
+                <div
+                  key={i}
+                  style={{ aspectRatio: "1 / 1", minHeight: 44 }}
+                />
+              );
+            }
+            // Daily override wins, otherwise fall back to the weekly template.
+            const daily = monthDaily[cell.iso];
+            const tpl = templateByDow[cell.dow];
+            const day = daily ?? tpl;
+            const isRest = !!day?.is_rest;
+            // Preset accent (per-preset color), if a preset is linked.
+            const linkedPreset = day?.preset_id
+              ? presetsById.get(day.preset_id) ?? null
+              : null;
+            const presetAccent = day?.preset_id
+              ? presetColorById.get(day.preset_id) ?? null
+              : null;
+            // `planned` provides the bg/border tint when no preset
+            // accent is available. Preset-linked cells override with
+            // the preset's own color further down.
+            const planned = !isRest && day?.workout_type
+              ? TYPE_THEME[day.workout_type]
+              : null;
+            const logged = loggedDates.has(cell.iso);
+            const isToday = cell.iso === todayISOStr;
+            const isPast = cell.iso < todayISOStr;
+
+            // Status icon at the bottom of each cell
+            let badge: React.ReactNode = null;
+            if (logged) {
+              badge = (
+                <CheckIcon size={11} color="#22c55e" />
+              );
+            } else if (isPast && !isRest && (day?.workout_type || day?.preset_id)) {
+              badge = <CrossIcon size={11} color="#a0432a" />;
+            } else if (isRest) {
+              badge = (
+                <span
+                  className="text-[8px] uppercase tracking-[0.18em] font-bold"
+                  style={{ ...fontDisplay, color: "#7a6f60" }}
+                >
+                  R
+                </span>
+              );
+            } else if (presetAccent) {
+              badge = (
+                <span
+                  aria-hidden
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: presetAccent,
+                    boxShadow: `0 0 4px ${presetAccent}`,
+                  }}
+                />
+              );
+            } else if (planned) {
+              badge = (
+                <span
+                  aria-hidden
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: planned.text,
+                    boxShadow: `0 0 4px ${planned.text}`,
+                  }}
+                />
+              );
+            }
+
+            // Per-preset background tint takes precedence; falls back
+            // to workout_type theme, rest tint, or unplanned shadow.
+            const cellBg = presetAccent
+              ? `${presetAccent}1f`
+              : planned
+              ? planned.bg
+              : isRest
+              ? "rgba(20,14,30,0.45)"
+              : "rgba(20,14,30,0.30)";
+            const cellBorder = presetAccent
+              ? `${presetAccent}66`
+              : "rgba(107,79,58,0.30)";
+
+            return (
+              <button
+                key={cell.iso}
+                type="button"
+                onClick={() => onSelectDay(cell.iso)}
+                className="relative flex flex-col items-center justify-between rounded transition hover:brightness-125"
+                style={{
+                  aspectRatio: "1 / 1",
+                  minHeight: 44,
+                  padding: "4px 2px",
+                  background: cellBg,
+                  border: isToday ? "1.5px solid #d4a020" : `1px solid ${cellBorder}`,
+                  boxShadow: isToday
+                    ? "0 0 8px rgba(212,160,32,0.30)"
+                    : undefined,
+                  opacity: isRest && !isToday ? 0.7 : 1,
+                  cursor: "pointer",
+                }}
+                title={
+                  cell.iso +
+                  (linkedPreset
+                    ? ` · ${linkedPreset.name}`
+                    : planned
+                    ? ` · planned ${planned.label}`
+                    : "") +
+                  (isRest ? " · rest" : "") +
+                  (logged ? " · logged" : "")
+                }
+              >
+                <div
+                  className="text-[10px] tabular-nums leading-none"
+                  style={{
+                    color: isToday ? "#f5d97a" : "#d8d2c2",
+                    fontWeight: isToday ? 700 : 500,
+                  }}
+                >
+                  {cell.day}
+                </div>
+                <div className="flex items-center justify-center h-3">
+                  {badge}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Legend */}
+        <div
+          className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-[9px] uppercase tracking-[0.16em] text-muted"
+          style={fontDisplay}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <CheckIcon size={9} color="#22c55e" />
+            Logged
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <CrossIcon size={9} color="#a0432a" />
+            Missed
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span
+              aria-hidden
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: "#a855f7",
+              }}
+            />
+            Planned
+          </span>
+          <span className="inline-flex items-center gap-1.5">
+            <span style={{ color: "#7a6f60", fontWeight: 700 }}>R</span>
+            Rest
+          </span>
+        </div>
+
+        <p
+          className="mt-3 text-[10px] italic"
+          style={{ ...fontDisplay, color: "rgba(216,210,194,0.5)" }}
+        >
+          Plans use this week's template (week 0) projected across the month.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function buildMonthGrid(
+  year: number,
+  month: number
+): Array<{ day: number; iso: string; dow: number } | null> {
+  const first = new Date(year, month, 1);
+  const startDay = first.getDay(); // 0=Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const total = Math.ceil((startDay + daysInMonth) / 7) * 7;
+  const out: Array<{ day: number; iso: string; dow: number } | null> = [];
+  for (let i = 0; i < total; i++) {
+    const dayNum = i - startDay + 1;
+    if (dayNum < 1 || dayNum > daysInMonth) {
+      out.push(null);
+    } else {
+      const date = new Date(year, month, dayNum);
+      out.push({
+        day: dayNum,
+        iso: isoForDate(date),
+        dow: date.getDay(),
+      });
+    }
+  }
+  return out;
+}
+
+function PencilGlyph() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={14}
+      height={14}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M12 20h9" />
+      <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z" />
+    </svg>
+  );
+}
+
+function TrashGlyph() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={14}
+      height={14}
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <polyline points="3 6 5 6 21 6" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6 M14 11v6" />
+    </svg>
+  );
+}
+
+function CalendarIcon({
+  size = 14,
+  color = "currentColor",
+}: {
+  size?: number;
+  color?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke={color}
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <rect x="3" y="5" width="18" height="16" rx="2" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+      <line x1="8" y1="3" x2="8" y2="7" />
+      <line x1="16" y1="3" x2="16" y2="7" />
+    </svg>
+  );
+}
+
+function CheckIcon({
+  size = 11,
+  color = "currentColor",
+}: {
+  size?: number;
+  color?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke={color}
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function CrossIcon({
+  size = 11,
+  color = "currentColor",
+}: {
+  size?: number;
+  color?: string;
+}) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width={size}
+      height={size}
+      fill="none"
+      stroke={color}
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
   );
 }
 

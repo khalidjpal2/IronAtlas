@@ -1,14 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Model, { type IExerciseData, type Muscle } from "react-body-highlighter";
 import {
-  LEVEL_COLOR,
   ZONE_LABEL,
   type MuscleGroup,
   type StrengthLevel,
   type Zone,
 } from "@/lib/strength";
+import { useHeatmapPalette } from "@/components/HeatmapColorContext";
 
 type Props = {
   view: "front" | "back";
@@ -33,13 +33,8 @@ const ZONE_TO_MUSCLES: Record<Zone, Muscle[]> = {
   calves: ["calves"],
 };
 
-const HIGHLIGHTED_COLORS = [
-  LEVEL_COLOR.below,
-  LEVEL_COLOR.average,
-  LEVEL_COLOR.above,
-  LEVEL_COLOR.exceptional,
-  LEVEL_COLOR.elite,
-];
+// HIGHLIGHTED_COLORS is now derived per-render from the active
+// heatmap palette inside the component below.
 
 const LEVEL_TO_FREQ: Record<StrengthLevel, number> = {
   untrained: 0,
@@ -159,6 +154,17 @@ const BACK_REGIONS: Region[] = [
 
 export default function BodySVG({ view, levels, onMuscleClick }: Props) {
   const [hoveredZone, setHoveredZone] = useState<Zone | null>(null);
+  const palette = useHeatmapPalette();
+  const highlightedColors = useMemo(
+    () => [
+      palette.scale.below,
+      palette.scale.average,
+      palette.scale.above,
+      palette.scale.exceptional,
+      palette.scale.elite,
+    ],
+    [palette]
+  );
   const regions = view === "front" ? FRONT_REGIONS : BACK_REGIONS;
 
   return (
@@ -206,8 +212,8 @@ export default function BodySVG({ view, levels, onMuscleClick }: Props) {
           <Model
             type={view === "front" ? "anterior" : "posterior"}
             data={buildData(levels)}
-            bodyColor="#2a2a3a"
-            highlightedColors={HIGHLIGHTED_COLORS}
+            bodyColor="#0a0a0f"
+            highlightedColors={highlightedColors}
             style={{ width: "100%", height: "100%" }}
             svgStyle={{ width: "100%", height: "100%" }}
           />

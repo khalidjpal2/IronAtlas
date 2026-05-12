@@ -129,7 +129,8 @@ export default async function AchievementsPage() {
   const standards: StandardRow[] = selectStandards(
     (allStandards ?? []) as StandardRow[],
     profile.ageGroup,
-    profile.sex ?? "male"
+    profile.sex ?? "male",
+    profile.bodyweight ?? null
   );
   const sets: SetRow[] = (setsRows ?? []).map((r: any) => ({
     exercise_name: r.exercise_name,

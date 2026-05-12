@@ -94,6 +94,35 @@ function parseISODate(iso: string): number | null {
 }
 
 /**
+ * Add (or subtract) calendar days from a YYYY-MM-DD string. Pure UTC
+ * arithmetic on the date components so the result is timezone-neutral.
+ * Returns "" for invalid input so callers don't propagate NaN.
+ */
+export function addDaysISO(iso: string, days: number): string {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  const t = Date.UTC(y, m - 1, d) + days * 86_400_000;
+  const dt = new Date(t);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(
+    2,
+    "0"
+  )}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Given a YYYY-MM-DD, return the YYYY-MM-DD of the Monday that begins
+ * its week. (My Week renders Mon–Sun.)
+ */
+export function mondayOfWeekISO(iso: string): string {
+  if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  const utc = Date.UTC(y, m - 1, d);
+  const dow = new Date(utc).getUTCDay(); // 0=Sun..6=Sat
+  const offset = (dow + 6) % 7; // Mon→0, Sun→6
+  return addDaysISO(iso, -offset);
+}
+
+/**
  * Format a YYYY-MM-DD as a human-friendly PT date (e.g. "Wed · May 7").
  */
 export function formatPTDate(

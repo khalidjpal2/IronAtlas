@@ -25,11 +25,15 @@ export default async function StepsPage() {
   );
 
   const admin = createSupabaseAdminClient();
-  const sinceISO = new Date(Date.now() - 60 * 86400 * 1000)
+  const sinceISO = new Date(Date.now() - 90 * 86400 * 1000)
     .toISOString()
     .slice(0, 10);
 
-  const [{ data: stepsRows }, goalRowRes] = await Promise.all([
+  const [
+    { data: stepsRows },
+    goalRowRes,
+    { data: allTimeStepsRows },
+  ] = await Promise.all([
     admin
       .from("daily_steps")
       .select("date, steps, goal")
@@ -41,6 +45,11 @@ export default async function StepsPage() {
       .select("daily_goal, personal_goal")
       .eq("user_id", user.id)
       .maybeSingle(),
+    admin
+      .from("daily_steps")
+      .select("date, steps, goal")
+      .eq("user_id", user.id)
+      .order("date", { ascending: true }),
   ]);
 
   // Fallback if personal_goal column hasn't been migrated yet.
@@ -72,6 +81,11 @@ export default async function StepsPage() {
       baseGoal={JOURNEY_BASE_GOAL}
       personalGoal={personalGoal}
       rows={(stepsRows ?? []).map((r: any) => ({
+        date: r.date,
+        steps: Number(r.steps ?? 0),
+        goal: Number(r.goal ?? JOURNEY_BASE_GOAL),
+      }))}
+      allTimeRows={(allTimeStepsRows ?? []).map((r: any) => ({
         date: r.date,
         steps: Number(r.steps ?? 0),
         goal: Number(r.goal ?? JOURNEY_BASE_GOAL),

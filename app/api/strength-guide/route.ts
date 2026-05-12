@@ -84,7 +84,8 @@ export async function GET() {
   const standards = selectStandards(
     (allStandards ?? []) as StandardRow[],
     profile.ageGroup,
-    profile.sex ?? "male"
+    profile.sex ?? "male",
+    profile.bodyweight ?? null
   );
 
   const sets: SetRow[] = (setsRows ?? []).map((r: any) => ({

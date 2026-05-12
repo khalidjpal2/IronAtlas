@@ -1,18 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import AppHeader from "@/components/AppHeader";
 import BodySVG from "@/components/BodySVG";
 import Legend from "@/components/Legend";
 import MuscleDetailPanel from "@/components/MuscleDetailPanel";
+import {
+  HeatmapColorProvider,
+} from "@/components/HeatmapColorContext";
+import HeatmapColorPicker from "@/components/HeatmapColorPicker";
 import PRCards, { type PR } from "@/components/PRCards";
 import {
   EXPERIENCE_LABEL,
-  LEVEL_COLOR,
-  LEVEL_GRADIENT,
-  LEVEL_LABEL,
   LEVEL_RANK,
   SEX_LABEL,
   ZONES,
@@ -23,6 +24,7 @@ import {
   type TrainingExperience,
   type Zone,
 } from "@/lib/strength";
+import { JOURNEY_BASE_GOAL } from "@/lib/scoring";
 
 type Props = {
   userId: string;
@@ -99,6 +101,13 @@ type Props = {
     reps: number;
     sets: number;
     date: string;
+  }>;
+  todaysSets: Array<{
+    exercise: string;
+    muscleGroup: string;
+    weight: number;
+    reps: number;
+    sets: number;
   }>;
   scores: {
     atlas: number;
@@ -181,6 +190,7 @@ export default function Dashboard({
   earnedBadges,
   newlyEarned,
   recentActivity,
+  todaysSets,
   enrichedSets,
 }: Props) {
   const router = useRouter();
@@ -188,6 +198,7 @@ export default function Dashboard({
   const [selectedZone, setSelectedZone] = useState<Zone | null>(null);
 
   return (
+    <HeatmapColorProvider>
     <div className="min-h-screen flex flex-col bg-bg pb-24 md:pb-0">
       <AppHeader
         username={username}
@@ -233,12 +244,18 @@ export default function Dashboard({
           </Link>
         )}
 
-        {/* === SCORES STRIP === */}
-        <ScoresStrip scores={scores} username={username} />
+        {/* === MAIN HUD GRID — Crest · Heatmap · Stats =========== */}
+        <section className="flex-1 min-h-0 grid grid-cols-1 gap-4 lg:grid-cols-[300px_minmax(0,1.4fr)_minmax(0,1fr)]">
+          {/* LEFT — Medieval crest box */}
+          <MedievalCrest
+            scores={scores}
+            zoneLevels={zoneLevels}
+            zoneDecay={zoneDecay}
+            stepsOverview={stepsOverview}
+            nutritionOverview={nutritionOverview}
+          />
 
-        {/* === MAIN HUD GRID === */}
-        <section className="flex-1 min-h-0 grid grid-cols-1 lg:grid-cols-[55fr_45fr] gap-4">
-          {/* LEFT — Body heatmap */}
+          {/* CENTER — Body heatmap (hero) */}
           <div
             className="tablet tablet-arcane relative rounded p-3 flex flex-col min-h-[600px] lg:min-h-0"
             style={{
@@ -256,6 +273,8 @@ export default function Dashboard({
                 {" · "}
                 {EXPERIENCE_LABEL[experience]}
               </div>
+              <div className="flex items-center gap-2">
+                <HeatmapColorPicker size={22} />
               <div
                 className="inline-flex bg-bg border border-bronze-deep rounded p-0.5 text-[10px] uppercase tracking-[0.18em]"
                 style={{ boxShadow: "inset 0 1px 2px rgba(0,0,0,0.6)" }}
@@ -295,6 +314,7 @@ export default function Dashboard({
                   Back
                 </button>
               </div>
+              </div>
             </div>
 
             <div className="relative flex-1 min-h-0 w-full">
@@ -310,56 +330,47 @@ export default function Dashboard({
             </div>
           </div>
 
-          {/* RIGHT — Today / Quests / Recent Activity */}
+          {/* RIGHT — Today's stats, today's workout, daily quests */}
           <aside className="flex flex-col gap-4 min-h-0">
-            {/* Today overview */}
-            <section className="tablet relative rounded p-3 shrink-0">
-              <span className="corner-bl" />
-              <span className="corner-br" />
-              <div className="grid grid-cols-3 gap-2.5">
-                <TodayMini
-                  href="/steps"
-                  label="Steps"
-                  value={stepsOverview.today.toLocaleString()}
-                  goal={`/ ${stepsOverview.goal.toLocaleString()}`}
-                  pct={
-                    stepsOverview.goal > 0
-                      ? stepsOverview.today / stepsOverview.goal
-                      : 0
-                  }
-                  color="#3a5a8a"
-                />
-                <TodayMini
-                  href="/calories"
-                  label="Calories"
-                  value={
-                    nutritionOverview.today
-                      ? nutritionOverview.today.calories.toLocaleString()
-                      : "—"
-                  }
-                  goal={`/ ${nutritionOverview.goals.calories.toLocaleString()}`}
-                  pct={
-                    nutritionOverview.today && nutritionOverview.goals.calories > 0
-                      ? nutritionOverview.today.calories /
-                        nutritionOverview.goals.calories
-                      : 0
-                  }
-                  color="#3d6b3a"
-                />
-                <TodayMini
-                  href="/lifting"
-                  label="Workouts"
-                  value={String(liftingOverview.workoutsThisWeek)}
-                  goal="this week"
-                  pct={Math.min(1, liftingOverview.workoutsThisWeek / 5)}
-                  color="#5b3993"
-                />
-              </div>
-            </section>
+            <div className="grid grid-cols-2 gap-3 shrink-0">
+              <TodayMini
+                href="/steps"
+                label="Steps"
+                value={stepsOverview.today.toLocaleString()}
+                goal={`/ ${stepsOverview.goal.toLocaleString()}`}
+                pct={
+                  stepsOverview.goal > 0
+                    ? stepsOverview.today / stepsOverview.goal
+                    : 0
+                }
+                color="#a855f7"
+              />
+              <TodayMini
+                href="/calories"
+                label="Calories"
+                value={
+                  nutritionOverview.today
+                    ? nutritionOverview.today.calories.toLocaleString()
+                    : "—"
+                }
+                goal={`/ ${nutritionOverview.goals.calories.toLocaleString()}`}
+                pct={
+                  nutritionOverview.today &&
+                  nutritionOverview.goals.calories > 0
+                    ? nutritionOverview.today.calories /
+                      nutritionOverview.goals.calories
+                    : 0
+                }
+                color="#f59e0b"
+              />
+            </div>
 
-            {/* Daily quests — fills the remaining column space now that
-                Recent Activity has moved out. */}
-            <DailyQuestsCard quests={dailyQuests} />
+            <TodaysWorkoutCard
+              todaysSets={todaysSets}
+              isRestDay={dailyQuests.atlas.progress.isRestDay}
+            />
+
+            <DailyQuestsList quests={dailyQuests} />
           </aside>
         </section>
 
@@ -370,8 +381,7 @@ export default function Dashboard({
             page reachable via the nav). Atlas keeps the rank, body,
             today overview, quests, recent activity, and rank progression. */}
 
-        {/* === DEBUG (always rendered, collapsed) ============== */}
-        {debug && (
+        {process.env.NODE_ENV === "development" && debug && (
           <details className="bg-panel border border-border rounded-2xl px-5 py-3 text-xs">
             <summary className="cursor-pointer text-muted hover:text-white transition">
               Debug · {debug.setsCount} sets · {debug.standardsCount} standards
@@ -392,10 +402,6 @@ export default function Dashboard({
   2
 )}
                 </pre>
-                <div className="text-muted mt-2 mb-1">Sample sets</div>
-                <pre className="bg-bg border border-border rounded-md p-2 overflow-auto whitespace-pre-wrap break-words">
-{JSON.stringify(debug.sampleSets, null, 2)}
-                </pre>
               </div>
               <div>
                 <div className="text-muted mb-1">Set audit</div>
@@ -411,25 +417,6 @@ export default function Dashboard({
       )
       .join("\n")}
                 </pre>
-                <div className="text-muted mt-2 mb-1">
-                  Chest zone breakdown
-                </div>
-                <pre className="bg-bg border border-border rounded-md p-2 overflow-auto whitespace-pre-wrap break-words">
-{JSON.stringify(
-  {
-    chestZoneLevel: debug.chestZoneLevel,
-    chestMuscleBest: debug.chestMuscleBest,
-  },
-  null,
-  2
-)}
-                </pre>
-                <p className="text-muted mt-2 leading-relaxed">
-                  Each set must have [OK]EX (exercise name matches{" "}
-                  <code>EXERCISE_OPTIONS</code>) AND [OK]STD (a row in{" "}
-                  <code>strength_standards</code> for the user's age
-                  group) to count toward the heatmap.
-                </p>
               </div>
             </div>
           </details>
@@ -455,269 +442,7 @@ export default function Dashboard({
         }}
       />
     </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  small,
-}: {
-  label: string;
-  value: string;
-  small?: boolean;
-}) {
-  return (
-    <div className="bg-elevated border border-border rounded-md px-3 py-3">
-      <div className="text-[9px] uppercase tracking-[0.18em] text-muted mb-1">
-        {label}
-      </div>
-      <div
-        className={`font-semibold text-ink truncate ${
-          small ? "text-xs" : "text-base"
-        }`}
-      >
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function StatBar({
-  zone,
-  level,
-  warning,
-  decayed,
-  daysSince,
-}: {
-  zone: Zone;
-  level: StrengthLevel;
-  warning?: boolean;
-  decayed?: boolean;
-  daysSince?: number | null;
-}) {
-  const rank = LEVEL_RANK[level];
-  const color = LEVEL_COLOR[level];
-  const fill = LEVEL_GRADIENT[level];
-  const pct = (rank / 5) * 100;
-  const showWarn = warning || decayed;
-  const warnTitle =
-    decayed && daysSince != null
-      ? `Decaying — ${daysSince} days since last trained`
-      : warning && daysSince != null
-      ? `Train within ${Math.max(1, 14 - daysSince)} days to avoid decay`
-      : undefined;
-  return (
-    <li className="space-y-1">
-      <div className="flex items-baseline justify-between text-[9px] uppercase tracking-[0.16em] gap-2">
-        <span className="flex items-center gap-1 min-w-0">
-          <span
-            className="font-semibold truncate"
-            style={{
-              fontFamily: "var(--font-cinzel), Georgia, serif",
-              color: rank > 0 ? "#d8d2c2" : "#5a5246",
-            }}
-          >
-            {ZONE_LABEL[zone]}
-          </span>
-          {showWarn && (
-            <span
-              className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
-              style={{
-                background: decayed ? "#a0432a" : "#b8860b",
-                boxShadow: decayed
-                  ? "0 0 4px rgba(160, 67, 42, 0.8)"
-                  : "0 0 4px rgba(184, 134, 11, 0.6)",
-              }}
-              title={warnTitle}
-            />
-          )}
-        </span>
-        <span className="flex items-center gap-1.5 whitespace-nowrap">
-          <LevelSeal level={level} size={10} />
-          <span
-            className="font-bold"
-            style={{
-              color,
-              textShadow: "0 1px 0 rgba(0,0,0,0.6)",
-            }}
-          >
-            {LEVEL_LABEL[level]}
-          </span>
-        </span>
-      </div>
-      <div className="xp-track" style={{ height: 5 }}>
-        {pct > 0 && (
-          <div
-            className="xp-fill"
-            style={{
-              width: `${pct}%`,
-              backgroundImage: fill,
-            }}
-          />
-        )}
-      </div>
-    </li>
-  );
-}
-
-// ─── Rank + score badges — premium medallion-style display ────────
-//
-// Three circular score badges (Atlas / Journey / Sustenance), each
-// with an arc that fills clockwise based on the score and a color
-// tied to the score's tier (gray < blue < green < gold < purple).
-// Above them sits the user's overall rank label in big tier-color
-// text, optionally pulsing when the user is at Legend.
-function ScoresStrip({
-  scores,
-  username,
-}: {
-  scores: Props["scores"];
-  username: string;
-}) {
-  const tier = rankTheme(scores.rank);
-  return (
-    <section
-      className={`tablet relative rounded p-6 lg:p-8 flex flex-col items-center gap-5 shrink-0 ${
-        tier.pulse ? "pulse-legendary" : ""
-      }`}
-      style={{
-        borderColor: tier.color,
-        backgroundImage: `radial-gradient(ellipse 90% 80% at 50% 0%, ${tier.bgDeep}, transparent 70%), radial-gradient(ellipse 70% 60% at 50% 0%, ${tier.color}22, transparent 70%), var(--noise-bg)`,
-        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.5), 0 0 ${tier.glowSize}px ${tier.color}3a, 0 6px 18px rgba(0,0,0,0.55)`,
-      }}
-    >
-      <span className="corner-bl" style={{ background: tier.color }} />
-      <span className="corner-br" style={{ background: tier.color }} />
-
-      {/* Identity + overall rank */}
-      <div className="text-center">
-        <div
-          className="text-[10px] uppercase tracking-[0.32em] text-gold/80"
-          style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
-        >
-          {username}
-        </div>
-        <div
-          className="text-4xl lg:text-5xl font-bold uppercase tracking-[0.06em] mt-1"
-          style={{
-            fontFamily: "var(--font-cinzel), Georgia, serif",
-            color: tier.color,
-            textShadow: `0 0 22px ${tier.color}77, 0 1px 0 rgba(0,0,0,0.75)`,
-          }}
-        >
-          {scores.rankLabel}
-        </div>
-        <div
-          className="mt-1 text-[11px] italic text-muted/90"
-          style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
-        >
-          {tier.flavor}
-        </div>
-      </div>
-
-      {/* Three circular medallions */}
-      <div className="grid grid-cols-3 gap-4 lg:gap-8">
-        <ScoreBadge score={scores.atlas} label="Atlas" />
-        <ScoreBadge score={scores.journey} label="Journey" />
-        <ScoreBadge score={scores.sustenance} label="Sustenance" />
-      </div>
-    </section>
-  );
-}
-
-// ─── Single circular badge ────────────────────────────────────────
-function ScoreBadge({ score, label }: { score: number; label: string }) {
-  // Color buckets per spec: 0-20 gray, 21-40 blue, 41-60 green,
-  // 61-80 gold, 81-100 purple (glowing).
-  const color =
-    score <= 20
-      ? "#4a4a52"
-      : score <= 40
-      ? "#3a5a8a"
-      : score <= 60
-      ? "#3d6b3a"
-      : score <= 80
-      ? "#b8860b"
-      : "#a855f7";
-  const glowing = score >= 81;
-  const r = 44;
-  const C = 2 * Math.PI * r;
-  const dashoffset = C * (1 - Math.max(0, Math.min(100, score)) / 100);
-
-  return (
-    <div className="flex flex-col items-center gap-1.5">
-      <div className="relative" style={{ width: 110, height: 110 }}>
-        <svg viewBox="0 0 110 110" className="absolute inset-0 w-full h-full">
-          {/* Outer ornate ring (decorative) */}
-          <circle
-            cx="55"
-            cy="55"
-            r={r + 6}
-            fill="none"
-            stroke="rgba(107, 79, 58, 0.45)"
-            strokeWidth="1"
-          />
-          {/* Track */}
-          <circle
-            cx="55"
-            cy="55"
-            r={r}
-            fill="none"
-            stroke="rgba(107, 79, 58, 0.28)"
-            strokeWidth="6"
-          />
-          {/* Score arc — clockwise from 12 o'clock */}
-          <circle
-            cx="55"
-            cy="55"
-            r={r}
-            fill="none"
-            stroke={color}
-            strokeWidth="6"
-            strokeLinecap="round"
-            strokeDasharray={C}
-            strokeDashoffset={dashoffset}
-            transform="rotate(-90 55 55)"
-            style={{
-              filter: glowing
-                ? `drop-shadow(0 0 10px ${color}) drop-shadow(0 0 4px ${color})`
-                : `drop-shadow(0 0 4px ${color}88)`,
-              transition: "stroke-dashoffset 700ms ease",
-            }}
-          />
-          {/* Inner well — gives the medallion a recessed look */}
-          <circle
-            cx="55"
-            cy="55"
-            r={r - 6}
-            fill="rgba(8, 8, 16, 0.7)"
-            stroke={`${color}55`}
-            strokeWidth="0.5"
-          />
-        </svg>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span
-            className="text-3xl font-bold tabular-nums"
-            style={{
-              fontFamily: "var(--font-cinzel), Georgia, serif",
-              color,
-              textShadow: glowing
-                ? `0 0 10px ${color}, 0 1px 0 rgba(0,0,0,0.8)`
-                : `0 0 6px ${color}77, 0 1px 0 rgba(0,0,0,0.75)`,
-            }}
-          >
-            {Math.round(score)}
-          </span>
-        </div>
-      </div>
-      <span
-        className="text-[10px] uppercase tracking-[0.22em] font-bold"
-        style={{ fontFamily: "var(--font-cinzel), Georgia, serif", color }}
-      >
-        {label}
-      </span>
-    </div>
+    </HeatmapColorProvider>
   );
 }
 
@@ -817,104 +542,6 @@ function RankProgression({
   );
 }
 
-function RankMedallion({ score, color }: { score: number; color: string }) {
-  const r = 30;
-  const c = 2 * Math.PI * r;
-  return (
-    <div className="relative shrink-0" style={{ width: 72, height: 72 }}>
-      <svg viewBox="0 0 72 72" className="absolute inset-0">
-        <circle cx="36" cy="36" r="34" fill="rgb(var(--color-panel))" stroke={color} strokeWidth="1.5" />
-        <circle cx="36" cy="36" r="30" fill="none" stroke={color} strokeOpacity="0.5" strokeWidth="0.5" />
-        {/* Crown points */}
-        {Array.from({ length: 8 }).map((_, i) => {
-          const a = (i / 8) * Math.PI * 2;
-          const x1 = 36 + Math.cos(a) * 30;
-          const y1 = 36 + Math.sin(a) * 30;
-          const x2 = 36 + Math.cos(a) * 35;
-          const y2 = 36 + Math.sin(a) * 35;
-          return (
-            <line
-              key={i}
-              x1={x1}
-              y1={y1}
-              x2={x2}
-              y2={y2}
-              stroke={color}
-              strokeOpacity="0.55"
-              strokeWidth="1"
-            />
-          );
-        })}
-        {/* Score arc */}
-        <circle
-          cx="36"
-          cy="36"
-          r={r}
-          fill="none"
-          stroke={color}
-          strokeWidth="2.5"
-          strokeLinecap="round"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - Math.max(0, Math.min(1, score / 100)))}
-          transform="rotate(-90 36 36)"
-          style={{ filter: `drop-shadow(0 0 4px ${color}88)` }}
-        />
-      </svg>
-      <div
-        className="absolute inset-0 flex items-center justify-center"
-        style={{
-          fontFamily: "var(--font-cinzel), Georgia, serif",
-          color,
-          textShadow: `0 0 10px ${color}88, 0 1px 0 rgba(0,0,0,0.7)`,
-        }}
-      >
-        <span className="text-xl font-bold tabular-nums">{score}</span>
-      </div>
-    </div>
-  );
-}
-
-function ScoreRow({
-  label,
-  score,
-  color,
-}: {
-  label: string;
-  score: number;
-  color: string;
-}) {
-  return (
-    <div>
-      <div className="flex items-baseline justify-between text-[10px] uppercase tracking-[0.18em] mb-1">
-        <span
-          className="font-bold"
-          style={{
-            fontFamily: "var(--font-cinzel), Georgia, serif",
-            color,
-          }}
-        >
-          {label}
-        </span>
-        <span className="text-muted tabular-nums">
-          <span className="text-ink font-semibold">{score}</span>
-          <span className="text-muted/60">/100</span>
-        </span>
-      </div>
-      <div className="xp-track" style={{ height: 6 }}>
-        {score > 0 && (
-          <div
-            className="xp-fill"
-            style={{
-              width: `${score}%`,
-              background: color,
-            }}
-          />
-        )}
-      </div>
-    </div>
-  );
-}
-
 /**
  * Per-tier rank theme. Each tier owns a full visual identity (deep bg,
  * accent, soft border, flavor line). Used everywhere a rank colors
@@ -986,60 +613,6 @@ const RANK_LADDER: Array<{
   { key: "legend",   label: "Legend",   threshold: 81 },
 ];
 
-// ─── Recent activity (last 3 sets) ────────────────────────────────
-function RecentActivityCard({
-  items,
-}: {
-  items: Props["recentActivity"];
-}) {
-  return (
-    <section className="tablet relative rounded p-4">
-      <span className="corner-bl" />
-      <span className="corner-br" />
-      <div className="flex items-center gap-3 mb-2">
-        <div
-          className="text-[11px] uppercase tracking-[0.22em] text-gold font-bold"
-          style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
-        >
-          Recent Activity
-        </div>
-        <div className="rune-divider flex-1" />
-      </div>
-      {items.length === 0 ? (
-        <p className="text-[11px] text-muted italic">
-          No sessions yet.
-        </p>
-      ) : (
-        <ul className="divide-y divide-border">
-          {items.slice(0, 3).map((r, i) => (
-            <li key={i} className="py-2 flex items-center gap-3">
-              <span
-                className="seal shrink-0"
-                style={{
-                  width: 8,
-                  height: 8,
-                  background: zoneDot(r.muscleGroup),
-                }}
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-[12px] text-ink truncate">
-                  {r.exercise}
-                </div>
-                <div className="text-[10px] uppercase tracking-[0.16em] text-muted/80">
-                  {ZONE_LABEL[r.muscleGroup as Zone] ?? r.muscleGroup}
-                </div>
-              </div>
-              <div className="text-[11px] text-gold tabular-nums whitespace-nowrap font-semibold">
-                {r.weight} x {r.reps} x {r.sets}
-              </div>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
 function zoneDot(zone: string): string {
   // Simple per-zone tint for the recent-activity dots — uses tier-ish
   // hues so the row reads at a glance.
@@ -1059,80 +632,727 @@ function zoneDot(zone: string): string {
   return map[zone] ?? "#5a5246";
 }
 
-// ─── Daily quests card ────────────────────────────────────────────
-function DailyQuestsCard({
+// ─── Medieval crest box (left rail) ───────────────────────────────
+function MedievalCrest({
+  scores,
+  zoneLevels,
+  zoneDecay,
+  stepsOverview,
+  nutritionOverview,
+}: {
+  scores: Props["scores"];
+  zoneLevels: Props["zoneLevels"];
+  zoneDecay: Props["zoneDecay"];
+  stepsOverview: Props["stepsOverview"];
+  nutritionOverview: Props["nutritionOverview"];
+}) {
+  const tier = rankTheme(scores.rank);
+  const hairlineGold =
+    "linear-gradient(90deg, transparent 0%, rgba(184,134,11,0.55) 50%, transparent 100%)";
+  const hairlineBronze =
+    "linear-gradient(90deg, transparent 0%, rgba(107,79,58,0.55) 25%, rgba(184,134,11,0.45) 50%, rgba(107,79,58,0.55) 75%, transparent 100%)";
+  return (
+    <aside
+      className="relative flex flex-col overflow-hidden"
+      style={{
+        background:
+          "linear-gradient(180deg, #0c0c18 0%, #08080f 100%), var(--noise-bg)",
+        backgroundBlendMode: "normal",
+        border: `1px solid ${tier.color}55`,
+        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), inset 0 -1px 0 rgba(0,0,0,0.6), 0 4px 18px rgba(0,0,0,0.55), 0 0 ${Math.max(8, tier.glowSize / 2)}px ${tier.color}22`,
+        clipPath:
+          "polygon(8px 0, calc(100% - 8px) 0, 100% 8px, 100% calc(100% - 8px), calc(100% - 8px) 100%, 8px 100%, 0 calc(100% - 8px), 0 8px)",
+      }}
+    >
+      {/* ─── Compact rank header — shield + name + overall, one line ─── */}
+      <div className="flex items-center gap-3 px-4 pt-4 pb-3 shrink-0">
+        <RankShield rank={scores.rank} color={tier.color} size={44} />
+        <div className="flex-1 min-w-0 flex items-baseline justify-between gap-2">
+          <span
+            className="text-[15px] uppercase tracking-[0.20em] font-bold leading-none truncate"
+            style={{
+              fontFamily: "var(--font-cinzel), Georgia, serif",
+              color: tier.color,
+              textShadow: `0 0 12px ${tier.color}66, 0 1px 0 rgba(0,0,0,0.75)`,
+            }}
+          >
+            {scores.rankLabel}
+          </span>
+          <span
+            className="text-[11px] tabular-nums leading-none shrink-0"
+            style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+          >
+            <span className="text-ink-strong font-semibold">
+              {Math.round(scores.overall)}
+            </span>
+            <span className="text-muted/60">/100</span>
+          </span>
+        </div>
+      </div>
+
+      <div
+        className="h-px mx-4 shrink-0"
+        style={{ background: hairlineGold }}
+      />
+
+      {/* ─── Three pillar rows — fill remaining height equally ─── */}
+      <div className="flex-1 flex flex-col min-h-0">
+        <PillarRow
+          label="Atlas"
+          score={scores.atlas}
+          tip={atlasTip(scores.atlas, zoneLevels, zoneDecay)}
+        />
+        <div
+          className="h-px mx-4 shrink-0"
+          style={{ background: hairlineBronze }}
+        />
+        <PillarRow
+          label="Journey"
+          score={scores.journey}
+          tip={journeyTip(
+            scores.journey,
+            stepsOverview.today,
+            JOURNEY_BASE_GOAL
+          )}
+        />
+        <div
+          className="h-px mx-4 shrink-0"
+          style={{ background: hairlineBronze }}
+        />
+        <PillarRow
+          label="Sustenance"
+          score={scores.sustenance}
+          tip={sustenanceTip(
+            scores.sustenance,
+            nutritionOverview.today,
+            nutritionOverview.goals
+          )}
+        />
+      </div>
+    </aside>
+  );
+}
+
+function pillarColor(score: number): string {
+  if (score <= 20) return "#6b7280";
+  if (score <= 40) return "#3b82f6";
+  if (score <= 60) return "#22c55e";
+  if (score <= 80) return "#f59e0b";
+  return "#a855f7";
+}
+
+function PillarMedallion({
+  score,
+  label,
+  fillToNext,
+}: {
+  score: number;
+  label: string;
+  fillToNext: number; // 0..1, score / nextThreshold
+}) {
+  const pct = Math.max(0, Math.min(100, Math.round(score)));
+  const color = pillarColor(pct);
+  const fill = Math.max(0, Math.min(1, fillToNext));
+  const radius = 32;
+  const circ = 2 * Math.PI * radius;
+  const dashOffset = circ * (1 - fill);
+  const glow = pct >= 81 ? 6 : pct >= 61 ? 4 : 2;
+
+  return (
+    <div
+      className="relative shrink-0"
+      style={{ width: 70, height: 70 }}
+      aria-label={`${label} score ${pct}`}
+    >
+      <svg
+        viewBox="0 0 70 70"
+        className="absolute inset-0"
+        style={{ overflow: "visible" }}
+      >
+        {/* Track ring */}
+        <circle
+          cx="35"
+          cy="35"
+          r={radius}
+          stroke="rgba(0,0,0,0.55)"
+          strokeWidth="3.5"
+          fill="none"
+        />
+        <circle
+          cx="35"
+          cy="35"
+          r={radius}
+          stroke={`${color}22`}
+          strokeWidth="3.5"
+          fill="none"
+        />
+        {/* Progress arc — score / nextThreshold */}
+        {fill > 0 && (
+          <circle
+            cx="35"
+            cy="35"
+            r={radius}
+            stroke={color}
+            strokeWidth="3.5"
+            fill="none"
+            strokeLinecap="round"
+            strokeDasharray={circ}
+            strokeDashoffset={dashOffset}
+            transform="rotate(-90 35 35)"
+            style={{
+              filter: `drop-shadow(0 0 ${glow}px ${color})`,
+            }}
+          />
+        )}
+      </svg>
+      {/* Recessed dark center with score + pillar name */}
+      <div
+        className="absolute rounded-full flex flex-col items-center justify-center"
+        style={{
+          inset: 7,
+          background:
+            "radial-gradient(circle at 50% 32%, #14121c 0%, #0a0a0f 75%)",
+          boxShadow:
+            "inset 0 2px 4px rgba(0,0,0,0.85), inset 0 -1px 2px rgba(255,255,255,0.04)",
+        }}
+      >
+        <span
+          className="font-bold leading-none tabular-nums"
+          style={{
+            fontFamily: "var(--font-cinzel), Georgia, serif",
+            fontSize: 22,
+            color: pct === 0 ? "#6b7280" : color,
+            textShadow:
+              pct === 0
+                ? "0 1px 1px rgba(0,0,0,0.9)"
+                : `0 0 8px ${color}aa, 0 1px 1px rgba(0,0,0,0.9)`,
+          }}
+        >
+          {pct}
+        </span>
+        <span
+          className="font-bold uppercase mt-0.5"
+          style={{
+            fontFamily: "var(--font-cinzel), Georgia, serif",
+            fontSize: 6.5,
+            letterSpacing: "0.10em",
+            color: "#9a9282",
+          }}
+        >
+          {label}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// Pillar rank ladder — same thresholds as the overall rank, used to
+// drive the per-pillar "to next rank" progress bars.
+const PILLAR_RANKS: Array<{ min: number; label: string; color: string }> = [
+  { min: 0,  label: "Dormant",  color: "#6b7280" },
+  { min: 21, label: "Initiate", color: "#3b82f6" },
+  { min: 41, label: "Warrior",  color: "#22c55e" },
+  { min: 61, label: "Champion", color: "#f59e0b" },
+  { min: 81, label: "Legend",   color: "#a855f7" },
+];
+
+function nextPillarRank(score: number): {
+  current: { min: number; label: string; color: string };
+  next: { min: number; label: string; color: string } | null;
+  fill: number;
+  ptsToNext: number;
+} {
+  let curIdx = 0;
+  for (let i = 0; i < PILLAR_RANKS.length; i++) {
+    if (score >= PILLAR_RANKS[i].min) curIdx = i;
+  }
+  const current = PILLAR_RANKS[curIdx];
+  const next = PILLAR_RANKS[curIdx + 1] ?? null;
+  const segStart = current.min;
+  const segEnd = next?.min ?? 100;
+  const fill = next
+    ? Math.max(0, Math.min(1, (score - segStart) / (segEnd - segStart)))
+    : 1;
+  const ptsToNext = next ? Math.max(0, next.min - score) : 0;
+  return { current, next, fill, ptsToNext };
+}
+
+// Quest-objective tip: icon glyph + concrete action + estimated point gain.
+// `pts` is capped at ptsToNext so we never promise more than the rank gap.
+type TipResult = { icon: string; action: string; pts: number };
+
+function capPts(pts: number, ptsToNext: number, hasNext: boolean): number {
+  if (!hasNext) return 0;
+  return Math.max(1, Math.min(pts, ptsToNext));
+}
+
+// Atlas — decay > untrained > weakest. Each zone level ≈ 1.82 pts; we
+// estimate "train one zone to average" ≈ 4 pts, "push one level" ≈ 2 pts.
+function atlasTip(
+  score: number,
+  zoneLevels: Partial<Record<Zone, StrengthLevel>>,
+  zoneDecay: Props["zoneDecay"]
+): TipResult {
+  const ICON = "⚔"; // ⚔
+  const { next, ptsToNext } = nextPillarRank(score);
+  const hasNext = !!next;
+  if (!hasNext) return { icon: ICON, action: "Forged to legend", pts: 0 };
+
+  const decayed = (ZONES as readonly Zone[]).find(
+    (z) => zoneDecay[z]?.decayed
+  );
+  if (decayed)
+    return {
+      icon: ICON,
+      action: `Restore ${ZONE_LABEL[decayed]} - decaying`,
+      pts: capPts(2, ptsToNext, hasNext),
+    };
+
+  const warned = (ZONES as readonly Zone[]).find(
+    (z) => zoneDecay[z]?.warning
+  );
+  if (warned)
+    return {
+      icon: ICON,
+      action: `Train ${ZONE_LABEL[warned]} - idle`,
+      pts: capPts(2, ptsToNext, hasNext),
+    };
+
+  const ranked = (ZONES as readonly Zone[])
+    .map((z) => ({
+      zone: z,
+      rank: LEVEL_RANK[zoneLevels[z] ?? "untrained"],
+    }))
+    .sort((a, b) => a.rank - b.rank);
+
+  const untrained = ranked.filter((r) => r.rank === 0);
+  if (untrained.length > 0) {
+    return {
+      icon: ICON,
+      action: `Train ${ZONE_LABEL[untrained[0].zone]}`,
+      pts: capPts(4, ptsToNext, hasNext),
+    };
+  }
+  return {
+    icon: ICON,
+    action: `Push ${ZONE_LABEL[ranked[0].zone]}`,
+    pts: capPts(2, ptsToNext, hasNext),
+  };
+}
+
+// Journey — ~3 pts per day at the base step goal. Logging today after a
+// gap also clears decay, worth a flat ~5 pts of headroom.
+function journeyTip(
+  score: number,
+  todaySteps: number,
+  baseGoal: number
+): TipResult {
+  const ICON = "🏃"; // 🏃
+  const { next, ptsToNext } = nextPillarRank(score);
+  const hasNext = !!next;
+  if (!hasNext) return { icon: ICON, action: "Pinnacle reached", pts: 0 };
+  if (todaySteps <= 0)
+    return {
+      icon: ICON,
+      action: "Log today's steps",
+      pts: capPts(5, ptsToNext, hasNext),
+    };
+  if (todaySteps >= baseGoal)
+    return {
+      icon: ICON,
+      action: "On track - keep streak alive",
+      pts: capPts(3, ptsToNext, hasNext),
+    };
+  const days = Math.max(1, Math.ceil(ptsToNext / 3));
+  const k = Math.round(baseGoal / 1000);
+  return {
+    icon: ICON,
+    action: `Hit ${k}k steps ${days} more day${days === 1 ? "" : "s"}`,
+    pts: capPts(days * 3, ptsToNext, hasNext),
+  };
+}
+
+// Sustenance — logging today is the urgent ask (clears decay + adds a day);
+// otherwise focus on protein or call out the days-to-next.
+function sustenanceTip(
+  score: number,
+  today: Props["nutritionOverview"]["today"],
+  goals: Props["nutritionOverview"]["goals"]
+): TipResult {
+  const ICON = "🍖"; // 🍖
+  const { next, ptsToNext } = nextPillarRank(score);
+  const hasNext = !!next;
+  if (!hasNext) return { icon: ICON, action: "Macros mastered", pts: 0 };
+  if (!today)
+    return {
+      icon: ICON,
+      action: "Log nutrition today",
+      pts: capPts(5, ptsToNext, hasNext),
+    };
+
+  const days = Math.max(1, Math.ceil(ptsToNext / 3));
+
+  if (
+    goals.protein != null &&
+    goals.protein > 0 &&
+    today.protein < goals.protein * 0.7
+  ) {
+    return {
+      icon: ICON,
+      action: "Focus on protein today",
+      pts: capPts(3, ptsToNext, hasNext),
+    };
+  }
+
+  if (
+    goals.calories > 0 &&
+    Math.abs(today.calories - goals.calories) > goals.calories * 0.2
+  ) {
+    return {
+      icon: ICON,
+      action: `Hit calorie goal ${days} more day${days === 1 ? "" : "s"}`,
+      pts: capPts(days * 3, ptsToNext, hasNext),
+    };
+  }
+
+  return {
+    icon: ICON,
+    action: `Log ${days} more clean day${days === 1 ? "" : "s"}`,
+    pts: capPts(days * 3, ptsToNext, hasNext),
+  };
+}
+
+function PillarRow({
+  label,
+  score,
+  tip,
+}: {
+  label: string;
+  score: number;
+  tip: TipResult;
+}) {
+  const pct = Math.max(0, Math.min(100, Math.round(score)));
+  const color = pillarColor(pct);
+  // Ring fill = score / nextThreshold (resets on rank-up).
+  const { next } = nextPillarRank(pct);
+  const fillToNext = next ? pct / next.min : 1;
+
+  return (
+    <div
+      className="flex-1 min-h-[100px] flex items-center gap-4 px-4 py-4"
+      style={{
+        background: `linear-gradient(90deg, ${color}1a 0%, ${color}08 55%, ${color}03 100%)`,
+      }}
+    >
+      {/* LEFT — circular progress ring with score + pillar name inside */}
+      <PillarMedallion
+        score={pct}
+        label={label.toUpperCase()}
+        fillToNext={fillToNext}
+      />
+
+      {/* RIGHT — quest objective + thin progress bar */}
+      <div className="flex-1 min-w-0 flex flex-col gap-3 self-center">
+        {/* Quest objective line */}
+        <div
+          className="text-[12px] leading-snug"
+          style={{
+            fontFamily: "var(--font-cinzel), Georgia, serif",
+            color: "#d8d2c2",
+          }}
+          title={`${tip.icon} ${tip.action}${tip.pts > 0 ? ` · +${tip.pts} pts` : ""}`}
+        >
+          <span
+            className="mr-1.5 inline-block"
+            style={{ filter: "saturate(1.1)" }}
+            aria-hidden
+          >
+            {tip.icon}
+          </span>
+          <span>{tip.action}</span>
+          {tip.pts > 0 && (
+            <>
+              <span className="text-muted/55 mx-1">·</span>
+              <span
+                className="font-bold tabular-nums"
+                style={{
+                  color: "#f0c45a",
+                  textShadow: "0 0 6px rgba(240,196,90,0.45)",
+                }}
+              >
+                +{tip.pts} pts
+              </span>
+            </>
+          )}
+        </div>
+
+        {/* Thin progress bar — same fill as the ring */}
+        <div
+          className="rounded-full overflow-hidden"
+          style={{
+            height: 5,
+            background: "rgba(0,0,0,0.55)",
+            boxShadow: "inset 0 1px 2px rgba(0,0,0,0.7)",
+          }}
+        >
+          {fillToNext > 0 && (
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${Math.min(1, fillToNext) * 100}%`,
+                background: color,
+                boxShadow: `0 0 6px ${color}aa`,
+              }}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RankShield({
+  rank,
+  color,
+  size = 92,
+}: {
+  rank: string;
+  color: string;
+  size?: number;
+}) {
+  // Shield silhouette with a tier-specific glyph carved in the center.
+  const height = Math.round((size / 92) * 104);
+  return (
+    <svg
+      viewBox="0 0 88 100"
+      width={size}
+      height={height}
+      style={{
+        filter: `drop-shadow(0 0 ${Math.max(4, size / 9)}px ${color}55) drop-shadow(0 2px 4px rgba(0,0,0,0.7))`,
+      }}
+    >
+      <defs>
+        <linearGradient id="shield-fill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#1a1622" />
+          <stop offset="100%" stopColor="#0a0810" />
+        </linearGradient>
+      </defs>
+      {/* Shield body */}
+      <path
+        d="M44 4 L80 12 L80 50 Q80 80 44 96 Q8 80 8 50 L8 12 Z"
+        fill="url(#shield-fill)"
+        stroke={color}
+        strokeWidth="2"
+      />
+      {/* Inner border */}
+      <path
+        d="M44 10 L74 16 L74 50 Q74 76 44 90 Q14 76 14 50 L14 16 Z"
+        fill="none"
+        stroke={`${color}66`}
+        strokeWidth="0.7"
+      />
+      <RankGlyph rank={rank} color={color} />
+    </svg>
+  );
+}
+
+function RankGlyph({ rank, color }: { rank: string; color: string }) {
+  // Each tier wears a different sigil. Centered in viewBox 88×100,
+  // glyph is roughly 44×44 from cx=44 cy=48.
+  const cx = 44;
+  const cy = 48;
+  switch (rank) {
+    case "legend": {
+      // 8-point star
+      const pts: string[] = [];
+      for (let i = 0; i < 16; i++) {
+        const r = i % 2 === 0 ? 18 : 7;
+        const a = (i / 16) * Math.PI * 2 - Math.PI / 2;
+        pts.push(`${cx + Math.cos(a) * r},${cy + Math.sin(a) * r}`);
+      }
+      return (
+        <polygon
+          points={pts.join(" ")}
+          fill={color}
+          stroke={color}
+          strokeWidth="1"
+          opacity="0.95"
+        />
+      );
+    }
+    case "champion": {
+      // Crown
+      return (
+        <g fill={color} opacity="0.9">
+          <path d={`M${cx - 18},${cy + 6} L${cx + 18},${cy + 6} L${cx + 16},${cy - 4} L${cx + 9},${cy + 2} L${cx + 4},${cy - 12} L${cx},${cy + 1} L${cx - 4},${cy - 12} L${cx - 9},${cy + 2} L${cx - 16},${cy - 4} Z`} />
+          <rect x={cx - 18} y={cy + 8} width="36" height="4" />
+        </g>
+      );
+    }
+    case "warrior": {
+      // Crossed swords
+      return (
+        <g stroke={color} strokeWidth="2.5" strokeLinecap="round" fill="none">
+          <line x1={cx - 14} y1={cy - 14} x2={cx + 14} y2={cy + 14} />
+          <line x1={cx + 14} y1={cy - 14} x2={cx - 14} y2={cy + 14} />
+          <circle cx={cx} cy={cy} r="3" fill={color} stroke="none" />
+        </g>
+      );
+    }
+    case "initiate": {
+      // Flame
+      return (
+        <path
+          d={`M${cx},${cy - 18} Q${cx + 12},${cy - 6} ${cx + 8},${cy + 6} Q${cx + 6},${cy + 14} ${cx},${cy + 16} Q${cx - 6},${cy + 14} ${cx - 8},${cy + 6} Q${cx - 12},${cy - 6} ${cx},${cy - 18} Z`}
+          fill={color}
+          opacity="0.85"
+        />
+      );
+    }
+    default: {
+      // Dormant — sleeping rune (circle with a slash)
+      return (
+        <g stroke={color} strokeWidth="2" fill="none" opacity="0.75">
+          <circle cx={cx} cy={cy} r="14" />
+          <line x1={cx - 9} y1={cy} x2={cx + 9} y2={cy} />
+        </g>
+      );
+    }
+  }
+}
+
+// ─── Today's workout card ─────────────────────────────────────────
+// Three states only: logged sets, rest day (per schedule), or empty
+// train day with a single CTA to log a session.
+function TodaysWorkoutCard({
+  todaysSets,
+  isRestDay,
+}: {
+  todaysSets: Props["todaysSets"];
+  isRestDay: boolean;
+}) {
+  const logged = todaysSets.length > 0;
+  const visible = todaysSets.slice(0, 3);
+  const more = Math.max(0, todaysSets.length - visible.length);
+
+  return (
+    <section className="tablet relative rounded p-4">
+      <span className="corner-bl" />
+      <span className="corner-br" />
+      <div className="flex items-center justify-between mb-3">
+        <div
+          className="text-[11px] uppercase tracking-[0.22em] text-gold font-bold inline-flex items-center gap-2"
+          style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+        >
+          {!logged && isRestDay && <MoonGlyph />}
+          {logged
+            ? "Today's Training"
+            : isRestDay
+            ? "Rest Day"
+            : "No Workout Logged Yet"}
+        </div>
+        {logged && more > 0 && (
+          <Link
+            href="/lifting"
+            prefetch
+            className="text-[10px] uppercase tracking-[0.18em] text-muted hover:text-gold transition"
+            style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+          >
+            View all ({todaysSets.length})
+          </Link>
+        )}
+      </div>
+
+      {logged ? (
+        <ul className="divide-y divide-border">
+          {visible.map((s, i) => (
+            <li key={i} className="py-2 flex items-center gap-3">
+              <span
+                className="seal shrink-0"
+                style={{
+                  width: 8,
+                  height: 8,
+                  background: zoneDot(s.muscleGroup),
+                }}
+              />
+              <div className="flex-1 min-w-0">
+                <div className="text-[12px] text-ink truncate">
+                  {s.exercise}
+                </div>
+                <div className="text-[10px] uppercase tracking-[0.16em] text-muted/80">
+                  {ZONE_LABEL[s.muscleGroup as Zone] ?? s.muscleGroup}
+                </div>
+              </div>
+              <div className="text-[11px] text-gold tabular-nums whitespace-nowrap font-semibold">
+                {s.weight} × {s.reps} × {s.sets}
+              </div>
+            </li>
+          ))}
+        </ul>
+      ) : isRestDay ? (
+        <p className="text-[12px] text-muted/85 italic leading-snug">
+          Recovery is part of the journey.
+        </p>
+      ) : (
+        <Link
+          href="/lifting"
+          prefetch
+          className="lift block rounded-md text-center font-bold uppercase tracking-[0.20em] transition"
+          style={{
+            fontFamily: "var(--font-cinzel), Georgia, serif",
+            fontSize: 12,
+            padding: "12px 14px",
+            color: "#f3e6ff",
+            background:
+              "linear-gradient(180deg, #6b21a8 0%, #4c1d95 100%)",
+            border: "1px solid #a855f7aa",
+            boxShadow:
+              "0 0 14px rgba(168,85,247,0.45), inset 0 1px 0 rgba(255,255,255,0.18), inset 0 -1px 0 rgba(0,0,0,0.45)",
+          }}
+        >
+          Log Session +
+        </Link>
+      )}
+    </section>
+  );
+}
+
+function MoonGlyph() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="w-3.5 h-3.5"
+      aria-hidden
+    >
+      <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+    </svg>
+  );
+}
+
+// ─── Daily quests — interactive quest cards ────────────────────────
+const QUEST_GREEN = "#22c55e";
+
+function DailyQuestsList({
   quests,
 }: {
   quests: Props["dailyQuests"];
 }) {
-  // Per-quest progress fraction for the bar fill.
-  const journeyPct =
-    quests.journey.progress.target > 0
-      ? Math.min(
-          1,
-          quests.journey.progress.current / quests.journey.progress.target
-        )
-      : 0;
-  const sustPct =
-    quests.sustenance.progress.target > 0
-      ? Math.min(
-          1,
-          quests.sustenance.progress.current /
-            quests.sustenance.progress.target
-        )
-      : 0;
-  // Atlas pct: rest day → full bar; train day → binary (any set today
-  // = 100%, otherwise 0%).
-  const atlasPct = quests.atlas.progress.isRestDay
-    ? 1
-    : quests.atlas.progress.current >= 1
-    ? 1
-    : 0;
+  // Convert raw quest payloads into card-ready data: state, progress
+  // numbers, accent color, and a "remaining" string for incomplete cards.
+  const calories = quests.sustenance.progress;
+  const steps = quests.journey.progress;
+  const workout = quests.atlas.progress;
 
-  const items: Array<{
-    kind: string;
-    q: { id: string; text: string; done: boolean };
-    pct: number;
-    label: string;
-    color: string;
-  }> = [
-    {
-      kind: "Sustenance",
-      q: {
-        id: quests.sustenance.id,
-        text: quests.sustenance.text,
-        done: quests.sustenance.done,
-      },
-      pct: sustPct,
-      label: quests.sustenance.progress.label,
-      color: "#3d6b3a",
-    },
-    {
-      kind: "Journey",
-      q: {
-        id: quests.journey.id,
-        text: quests.journey.text,
-        done: quests.journey.done,
-      },
-      pct: journeyPct,
-      label: quests.journey.progress.label,
-      color: "#3a5a8a",
-    },
-    {
-      kind: "Atlas",
-      q: {
-        id: quests.atlas.id,
-        text: quests.atlas.text,
-        done: quests.atlas.done,
-      },
-      pct: atlasPct,
-      label: quests.atlas.progress.label,
-      color: "#a83232",
-    },
-  ];
+  const calorieRemaining = Math.max(0, calories.target - calories.current);
+  const stepRemaining = Math.max(0, steps.target - steps.current);
 
   return (
-    <section className="tablet relative rounded p-5 shrink-0 flex-1 flex flex-col">
+    <section className="tablet relative rounded p-4 flex-1 flex flex-col">
       <span className="corner-bl" />
       <span className="corner-br" />
       <div className="flex items-center justify-between mb-3">
@@ -1151,257 +1371,320 @@ function DailyQuestsCard({
               textShadow: "0 0 6px rgba(184,134,11,0.5)",
             }}
           >
-            All Complete · +5
+            +5 Bonus
           </span>
         )}
       </div>
-      <ul className="space-y-3 flex-1">
-        {items.map(({ kind, q, pct, label, color }) => (
-          <li
-            key={q.id}
-            className="rounded p-2.5"
-            style={{
-              background: q.done ? `${color}1A` : "rgba(20, 14, 30, 0.45)",
-              border: q.done
-                ? `1px solid ${color}55`
-                : "1px solid rgba(107, 79, 58, 0.35)",
-            }}
-          >
-            <div className="flex items-start gap-2.5">
-              <QuestCheck done={q.done} color={color} />
-              <div className="flex-1 min-w-0">
-                <div
-                  className="text-[9px] uppercase tracking-[0.22em] font-bold leading-none"
-                  style={{
-                    fontFamily: "var(--font-cinzel), Georgia, serif",
-                    color: q.done ? color : "#b8860b",
-                  }}
-                >
-                  {kind}
-                </div>
-                <div
-                  className={`text-[12px] leading-snug mt-1 ${
-                    q.done ? "text-muted/80 line-through" : "text-ink"
-                  }`}
-                >
-                  {q.text}
-                </div>
-                <div className="mt-2 xp-track" style={{ height: 4 }}>
-                  {pct > 0 && (
-                    <div
-                      className="xp-fill transition-all duration-700 ease-out"
-                      style={{ width: `${pct * 100}%`, background: color }}
-                    />
-                  )}
-                </div>
-                <div className="text-[10px] tabular-nums text-muted/85 mt-1">
-                  {label}
-                </div>
-              </div>
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
 
-function QuestCheck({
-  done,
-  color = "#3d6b3a",
-}: {
-  done: boolean;
-  color?: string;
-}) {
-  if (done) {
-    return (
-      <span
-        className="mt-0.5 shrink-0 flex items-center justify-center rounded-full"
-        style={{
-          width: 18,
-          height: 18,
-          background: color,
-          boxShadow: `0 0 8px ${color}99`,
-        }}
-        aria-label="Quest complete"
-      >
-        <svg
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="#0c0c18"
-          strokeWidth="3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          className="w-3 h-3"
-        >
-          <polyline points="20 6 9 17 4 12" />
-        </svg>
-      </span>
-    );
-  }
-  return (
-    <span
-      className="mt-0.5 shrink-0 rounded-full border-2 border-bronze-deep"
-      style={{ width: 18, height: 18 }}
-      aria-label="Quest pending"
-    />
-  );
-}
-
-// ─── Hall of Achievements ─────────────────────────────────────────
-function AchievementsHall({
-  earned,
-  newlyEarned,
-}: {
-  earned: string[];
-  newlyEarned: string[];
-}) {
-  const earnedSet = new Set(earned);
-  const newSet = new Set(newlyEarned);
-  return (
-    <section className="space-y-3">
-      <div className="flex items-center gap-3">
-        <h2
-          className="text-[12px] uppercase tracking-[0.22em] text-gold font-bold"
-          style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
-        >
-          Hall of Achievements
-          <span className="text-muted/60 ml-2">
-            {earned.length} / {DASHBOARD_BADGES.length}
-          </span>
-        </h2>
-        <div className="rune-divider flex-1" />
-      </div>
-      <div className="grid grid-cols-3 sm:grid-cols-6 lg:grid-cols-8 gap-3">
-        {DASHBOARD_BADGES.map((b) => {
-          const isEarned = earnedSet.has(b.id);
-          const isNew = newSet.has(b.id);
-          return (
-            <BadgeTile
-              key={b.id}
-              badge={b}
-              earned={isEarned}
-              fresh={isNew}
-            />
-          );
-        })}
+      <div className="flex flex-col gap-2.5 flex-1">
+        <QuestCard
+          label="Calorie Goal"
+          accent="#f59e0b"
+          icon={<FlameIcon color="#f59e0b" />}
+          state={quests.sustenance.done ? "done" : "pending"}
+          progressText={calories.label}
+          remainingText={
+            calorieRemaining > 0
+              ? `${calorieRemaining.toLocaleString()} cal remaining`
+              : "Goal reached"
+          }
+          pct={
+            calories.target > 0
+              ? calories.current / calories.target
+              : 0
+          }
+        />
+        <QuestCard
+          label="Step Goal"
+          accent="#3b82f6"
+          icon={<BootIcon color="#3b82f6" />}
+          state={quests.journey.done ? "done" : "pending"}
+          progressText={steps.label}
+          remainingText={
+            stepRemaining > 0
+              ? `${stepRemaining.toLocaleString()} steps remaining`
+              : "Goal reached"
+          }
+          pct={steps.target > 0 ? steps.current / steps.target : 0}
+        />
+        <QuestCard
+          label="Workout"
+          accent="#a855f7"
+          icon={<SwordIcon color="#a855f7" />}
+          state={
+            workout.isRestDay
+              ? "rest"
+              : quests.atlas.done
+              ? "done"
+              : "pending"
+          }
+          progressText={workout.isRestDay ? "Rest Day" : workout.label}
+          remainingText={
+            workout.isRestDay ? "Recover well" : "Not logged today"
+          }
+          pct={workout.isRestDay ? 1 : quests.atlas.done ? 1 : 0}
+        />
       </div>
     </section>
   );
 }
 
-function BadgeTile({
-  badge,
-  earned,
-  fresh,
+function QuestCard({
+  label,
+  icon,
+  accent,
+  state,
+  progressText,
+  remainingText,
+  pct,
 }: {
-  badge: { id: string; name: string; description: string; category: string };
-  earned: boolean;
-  fresh: boolean;
+  label: string;
+  icon: ReactNode;
+  accent: string;
+  state: "done" | "pending" | "rest";
+  progressText: string;
+  remainingText: string;
+  pct: number;
 }) {
-  const tone = badgeCategoryColor(badge.category);
+  const isDone = state === "done";
+  const isRest = state === "rest";
+  const ringColor = isDone ? QUEST_GREEN : accent;
+  const clamped = Math.max(0, Math.min(1, pct));
+
   return (
     <div
-      className={`tablet relative rounded p-3 text-center transition ${
-        earned ? "" : "opacity-40 grayscale"
-      } ${fresh ? "pulse-legendary" : ""}`}
+      className="relative rounded-md flex items-center gap-3 transition"
       style={{
-        background: earned
-          ? `linear-gradient(180deg, ${tone}22, transparent), #0c0c18`
-          : undefined,
+        minHeight: 70,
+        padding: "10px 12px",
+        background: isDone
+          ? "linear-gradient(180deg, rgba(34,197,94,0.10) 0%, rgba(34,197,94,0.02) 100%)"
+          : "rgba(20,18,28,0.55)",
+        border: `1px solid ${isDone ? `${QUEST_GREEN}66` : "var(--bronze-deep)"}`,
+        boxShadow: isDone
+          ? `0 0 14px ${QUEST_GREEN}44, inset 0 1px 0 rgba(255,255,255,0.05)`
+          : "inset 0 1px 0 rgba(255,255,255,0.04), inset 0 -1px 0 rgba(0,0,0,0.45)",
       }}
-      title={badge.description}
     >
-      <span className="corner-bl" />
-      <span className="corner-br" />
+      {/* LEFT — colored icon tile */}
       <div
-        className="seal mx-auto"
+        className="flex items-center justify-center rounded-md shrink-0"
         style={{
-          width: 28,
-          height: 28,
-          background: earned ? tone : "#4a4a52",
-        }}
-      />
-      <div
-        className="text-[10px] uppercase tracking-[0.16em] mt-2 font-bold leading-tight"
-        style={{
-          fontFamily: "var(--font-cinzel), Georgia, serif",
-          color: earned ? tone : "#5a5246",
+          width: 42,
+          height: 42,
+          background: `${ringColor}1a`,
+          border: `1px solid ${ringColor}55`,
+          boxShadow: isDone
+            ? `0 0 10px ${QUEST_GREEN}66, inset 0 1px 0 rgba(255,255,255,0.06)`
+            : `0 0 6px ${ringColor}33, inset 0 1px 0 rgba(255,255,255,0.04)`,
+          color: isDone ? QUEST_GREEN : ringColor,
         }}
       >
-        {badge.name}
+        {icon}
       </div>
-      <div className="text-[9px] text-muted/70 mt-1 leading-snug">
-        {badge.description}
-      </div>
-      {fresh && (
+
+      {/* CENTER — name + value/remaining + bar */}
+      <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <span
+            className="text-[11px] uppercase tracking-[0.20em] font-bold leading-none"
+            style={{
+              fontFamily: "var(--font-cinzel), Georgia, serif",
+              color: isDone ? QUEST_GREEN : "#d8d2c2",
+              textShadow: isDone ? `0 0 6px ${QUEST_GREEN}55` : undefined,
+            }}
+          >
+            {label}
+          </span>
+          {isDone && (
+            <span
+              className="text-[9px] uppercase tracking-[0.20em] font-bold leading-none"
+              style={{
+                fontFamily: "var(--font-cinzel), Georgia, serif",
+                color: QUEST_GREEN,
+                textShadow: `0 0 6px ${QUEST_GREEN}66`,
+              }}
+            >
+              Complete
+            </span>
+          )}
+        </div>
         <div
-          className="text-[8px] uppercase tracking-[0.20em] text-gold mt-1 font-bold"
+          className="text-[10.5px] tabular-nums leading-none truncate"
           style={{
-            fontFamily: "var(--font-cinzel), Georgia, serif",
-            textShadow: "0 0 6px rgba(184,134,11,0.6)",
+            color: isDone
+              ? "rgba(216,210,194,0.85)"
+              : isRest
+              ? "rgba(155,146,130,0.85)"
+              : "rgba(216,210,194,0.85)",
           }}
         >
-          New!
+          {isDone ? progressText : isRest ? remainingText : progressText}
+          {!isDone && !isRest && (
+            <span className="text-muted/60 ml-1.5">· {remainingText}</span>
+          )}
         </div>
-      )}
+        <div
+          className="rounded-full overflow-hidden"
+          style={{
+            height: 4,
+            background: "rgba(0,0,0,0.55)",
+            boxShadow: "inset 0 1px 2px rgba(0,0,0,0.6)",
+          }}
+        >
+          {clamped > 0 && (
+            <div
+              className="h-full rounded-full"
+              style={{
+                width: `${clamped * 100}%`,
+                background: isDone ? QUEST_GREEN : accent,
+                boxShadow: `0 0 5px ${isDone ? QUEST_GREEN : accent}aa`,
+              }}
+            />
+          )}
+        </div>
+      </div>
+
+      {/* RIGHT — status circle */}
+      <QuestStatusCircle state={state} />
     </div>
   );
 }
 
-function badgeCategoryColor(c: string) {
-  if (c === "lifting") return "#5b3993";
-  if (c === "journey") return "#3a5a8a";
-  if (c === "sustenance") return "#3d6b3a";
-  return "#b8860b";
-}
-
-// Mirror of lib/badges.BADGES, kept here so we don't import it from the
-// client component (it's also imported server-side; keeping a local copy
-// avoids the "use client" / server-only boundary friction). Server is
-// the source of truth for `earned`; this list just controls how many
-// silhouettes show.
-const DASHBOARD_BADGES: Array<{
-  id: string;
-  name: string;
-  description: string;
-  category: string;
-}> = [
-  { id: "lifting.first_blood",  name: "First Blood",   description: "Log your first workout", category: "lifting" },
-  { id: "lifting.iron_will",    name: "Iron Will",     description: "Log 10 workouts", category: "lifting" },
-  { id: "lifting.awakened",     name: "Awakened",      description: "Reach Awakened in any zone", category: "lifting" },
-  { id: "lifting.legendary",    name: "Legendary",     description: "Reach Legendary in any zone", category: "lifting" },
-  { id: "lifting.full_atlas",   name: "Full Atlas",    description: "Take every zone above Dormant", category: "lifting" },
-  { id: "lifting.big_three",    name: "Big Three",     description: "PRs for Bench, Squat, Deadlift", category: "lifting" },
-  { id: "journey.first_steps",  name: "First Steps",   description: "Log steps for the first time", category: "journey" },
-  { id: "journey.10k_club",     name: "10K Club",      description: "10,000 steps in a day", category: "journey" },
-  { id: "journey.week_warrior", name: "Week Warrior",  description: "7-day step streak", category: "journey" },
-  { id: "journey.month_march",  name: "Month March",   description: "30-day step streak", category: "journey" },
-  { id: "sustenance.first_meal",    name: "First Meal",    description: "Log nutrition first time", category: "sustenance" },
-  { id: "sustenance.week_of_plenty",name: "Week of Plenty",description: "Log 7 days in a row", category: "sustenance" },
-  { id: "sustenance.macro_master",  name: "Macro Master",  description: "Hit all macro goals in a day", category: "sustenance" },
-  { id: "overall.warrior",   name: "Warrior",   description: "Reach Warrior rank",   category: "overall" },
-  { id: "overall.champion",  name: "Champion",  description: "Reach Champion rank",  category: "overall" },
-  { id: "overall.legend",    name: "Legend",    description: "Reach Legend rank",    category: "overall" },
-  { id: "overall.balanced",  name: "Balanced",  description: "All three pillars > 60", category: "overall" },
-];
-
-/**
- * Wax-seal style level badge — small carved disc.
- */
-function LevelSeal({ level, size = 12 }: { level: StrengthLevel; size?: number }) {
-  const color = LEVEL_COLOR[level];
+function QuestStatusCircle({
+  state,
+}: {
+  state: "done" | "pending" | "rest";
+}) {
+  const size = 22;
+  if (state === "done") {
+    return (
+      <div
+        className="rounded-full flex items-center justify-center shrink-0"
+        style={{
+          width: size,
+          height: size,
+          background: QUEST_GREEN,
+          boxShadow: `0 0 10px ${QUEST_GREEN}88, inset 0 1px 0 rgba(255,255,255,0.25)`,
+        }}
+        aria-label="Complete"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="#0a0a0f"
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          width={12}
+          height={12}
+        >
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      </div>
+    );
+  }
+  if (state === "rest") {
+    return (
+      <div
+        className="rounded-full flex items-center justify-center shrink-0"
+        style={{
+          width: size,
+          height: size,
+          border: "1.5px solid rgba(139,130,117,0.55)",
+          background: "rgba(0,0,0,0.3)",
+          color: "#8b8275",
+        }}
+        aria-label="Rest day"
+      >
+        <MoonGlyph />
+      </div>
+    );
+  }
   return (
-    <span
-      className="seal"
+    <div
+      className="rounded-full shrink-0"
       style={{
         width: size,
         height: size,
-        background: color,
+        border: "1.5px solid rgba(155,146,130,0.45)",
+        background: "rgba(0,0,0,0.3)",
+        boxShadow: "inset 0 1px 2px rgba(0,0,0,0.4)",
       }}
-      aria-label={LEVEL_LABEL[level]}
-      title={LEVEL_LABEL[level]}
+      aria-label="Incomplete"
     />
+  );
+}
+
+// ── Daily-quest icons (custom SVGs so we can color them per accent) ──
+function FlameIcon({ color }: { color: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill={color}
+      stroke={color}
+      strokeWidth="0.8"
+      strokeLinejoin="round"
+      width={20}
+      height={20}
+      aria-hidden
+    >
+      <path
+        d="M12 2 C 9 6, 7 9, 7 13.5 C 7 17.5, 9.2 21, 12 21 C 14.8 21, 17 17.5, 17 13.5 C 17 11, 16 9.5, 14.5 8 C 14.5 10, 13.5 11, 12.5 11 C 12.5 8, 13 5, 12 2 Z"
+        opacity="0.95"
+      />
+      <path
+        d="M12 11 C 10.5 13, 10 14.5, 10 16 C 10 18, 11 19.5, 12 19.5 C 13 19.5, 14 18, 14 16 C 14 14.5, 13.5 13, 12 11 Z"
+        fill="#ffe8b0"
+        opacity="0.65"
+        stroke="none"
+      />
+    </svg>
+  );
+}
+
+function BootIcon({ color }: { color: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      width={20}
+      height={20}
+      aria-hidden
+    >
+      <path
+        d="M7 4 L 7 14 L 5 14 L 5 19 L 19 19 L 19 16 C 19 14 17 13.5 16 13.5 L 12 13.5 L 12 4 Z"
+        fill={`${color}26`}
+      />
+      <line x1="7" y1="9" x2="12" y2="9" />
+      <line x1="5" y1="19" x2="19" y2="19" strokeWidth="2.4" />
+    </svg>
+  );
+}
+
+function SwordIcon({ color }: { color: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={color}
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      width={20}
+      height={20}
+      aria-hidden
+    >
+      <path d="M14.5 17.5 L 20 12 L 19 8 L 16 5 L 12 4 L 6.5 9.5 Z" fill={`${color}26`} />
+      <line x1="14.5" y1="17.5" x2="20" y2="12" />
+      <line x1="6.5" y1="9.5" x2="2.5" y2="13.5" strokeWidth="2.2" />
+      <line x1="3.5" y1="20.5" x2="6.5" y2="17.5" />
+      <line x1="2.5" y1="13.5" x2="6" y2="17" />
+    </svg>
   );
 }
 
@@ -1425,34 +1708,52 @@ function TodayMini({
     <Link
       href={href}
       prefetch
-      className="lift block bg-elevated border border-bronze-deep rounded p-2.5 group transition"
+      className="lift block bg-elevated border rounded-md group transition relative overflow-hidden"
       style={{
-        boxShadow:
-          "inset 0 1px 0 rgba(255,255,255,0.04), inset 0 -1px 0 rgba(0,0,0,0.4)",
+        borderColor: `${color}55`,
+        padding: "16px 16px 14px",
+        boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), inset 0 -1px 0 rgba(0,0,0,0.45), 0 0 12px ${color}1a`,
+        background: `linear-gradient(180deg, ${color}0a 0%, transparent 100%), var(--elevated, #14121c)`,
       }}
     >
       <div
-        className="text-[9px] uppercase tracking-[0.22em] text-gold/80 font-bold"
-        style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+        className="text-[10px] uppercase tracking-[0.22em] font-bold leading-none"
+        style={{
+          fontFamily: "var(--font-cinzel), Georgia, serif",
+          color: `${color}cc`,
+        }}
       >
         {label}
       </div>
-      <div className="mt-1 flex items-baseline gap-1">
+      <div className="mt-2.5 flex items-baseline gap-1.5">
         <span
-          className="text-xl font-bold tabular-nums leading-none gold-text"
-          style={{ fontFamily: "var(--font-cinzel), Georgia, serif" }}
+          className="font-bold tabular-nums leading-none"
+          style={{
+            fontFamily: "var(--font-cinzel), Georgia, serif",
+            fontSize: 28,
+            color: "#ece6d5",
+            textShadow: `0 0 10px ${color}55, 0 1px 1px rgba(0,0,0,0.85)`,
+          }}
         >
           {value}
         </span>
         <span className="text-[10px] text-muted truncate">{goal}</span>
       </div>
-      <div className="mt-2 xp-track" style={{ height: 4 }}>
+      <div
+        className="mt-3 rounded-full overflow-hidden"
+        style={{
+          height: 7,
+          background: "rgba(0,0,0,0.55)",
+          boxShadow: "inset 0 1px 2px rgba(0,0,0,0.7)",
+        }}
+      >
         {clamped > 0 && (
           <div
-            className="xp-fill"
+            className="h-full rounded-full"
             style={{
               width: `${clamped * 100}%`,
               background: color,
+              boxShadow: `0 0 8px ${color}aa`,
             }}
           />
         )}

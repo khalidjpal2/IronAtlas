@@ -16,6 +16,7 @@ import {
 import AppHeader, { type HeaderProfile } from "@/components/AppHeader";
 import MonthCalendar, { type CalendarCell } from "@/components/MonthCalendar";
 import CompassWheel, { type CompassDay } from "@/components/CompassWheel";
+import StepAnalytics from "@/components/StepAnalytics";
 import { tooltipStyle, useChartPalette } from "@/lib/chartTheme";
 import { createSupabaseBrowserClient } from "@/lib/supabase";
 import { todayPT } from "@/lib/time";
@@ -32,6 +33,7 @@ type Props = {
   baseGoal: number;
   personalGoal: number;
   rows: StepsRow[];
+  allTimeRows: StepsRow[];
 };
 
 const fontDisplay = { fontFamily: "var(--font-cinzel), Georgia, serif" };
@@ -46,6 +48,7 @@ export default function StepsClient({
   baseGoal,
   personalGoal: initialPersonalGoal,
   rows,
+  allTimeRows,
 }: Props) {
   const router = useRouter();
   const chart = useChartPalette();
@@ -263,7 +266,16 @@ export default function StepsClient({
   }, [byDate, baseGoal]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-bg pb-24 md:pb-0">
+    <div
+      className="min-h-screen flex flex-col pb-24 md:pb-0"
+      style={{
+        backgroundColor: "#080808",
+        backgroundImage: [
+          "radial-gradient(ellipse 60% 40% at 50% 0%, rgba(40,30,60,0.30), rgba(0,0,0,0) 70%)",
+          "radial-gradient(ellipse 80% 50% at 50% 100%, rgba(20,18,30,0.30), rgba(0,0,0,0) 70%)",
+        ].join(", "),
+      }}
+    >
       <AppHeader username={username} isAdmin={isAdmin} profile={profile} />
 
       <main className="flex-1 w-full px-6 lg:px-10 py-6 space-y-6">
@@ -303,11 +315,10 @@ export default function StepsClient({
           </div>
         )}
 
-        {/* === TOP ROW: ROAD (left) + SIDE PANEL (right) === */}
-        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-6 items-start">
-          {/* ROAD OF TRIALS — calendar grid */}
-          <RoadOfTrials
-            userId={userId}
+        {/* === TOP ROW: WINDING PATH (left) + SIDE PANEL (right) === */}
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-6 items-start">
+          {/* THE WINDING PATH — knight's journey down the month */}
+          <WindingPath
             todayISO={today()}
             byDate={byDate}
             baseGoal={baseGoal}
@@ -315,8 +326,8 @@ export default function StepsClient({
             onDayClick={(iso) => setSelectedDate(iso)}
           />
 
-          {/* SIDE PANEL */}
-          <aside className="flex flex-col gap-4">
+          {/* SIDE PANEL — sticky so it stays visible while the path scrolls */}
+          <aside className="flex flex-col gap-4 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:overflow-y-auto">
             {/* Today hero */}
             <section
               className="tablet relative rounded p-5 text-center"
@@ -464,6 +475,13 @@ export default function StepsClient({
             accent="#c25a3a"
           />
         </div>
+
+        {/* === STEP ANALYTICS — interactive gadgets === */}
+        <StepAnalytics
+          allTimeRows={allTimeRows}
+          baseGoal={baseGoal}
+          personalGoal={initialPersonalGoal}
+        />
       </main>
 
       {/* Journey day modal */}
@@ -541,6 +559,1211 @@ const MONTH_LABELS = [
   "November",
   "December",
 ];
+
+// ─── WindingPath — knight's journey down the month ────────────────
+// A worn dirt road through a dark fantasy landscape; one milestone
+// stone per day in the current calendar month; today's stone wears a
+// small knight figure.
+type StoneStatus =
+  | "personal"
+  | "met"
+  | "partial"
+  | "none"
+  | "today"
+  | "future";
+
+const STONE_COLORS: Record<
+  StoneStatus,
+  { bg: string; edge: string; text: string; glow: string }
+> = {
+  personal: {
+    bg: "#4c1d95",
+    edge: "#7c3aed",
+    text: "#f5efff",
+    glow: "rgba(124,58,237,0.45)",
+  },
+  met: {
+    bg: "#4c1d95",
+    edge: "#7c3aed",
+    text: "#f5efff",
+    glow: "rgba(124,58,237,0.35)",
+  },
+  partial: {
+    bg: "#1e3a5f",
+    edge: "#3b82f6",
+    text: "#dbe2f1",
+    glow: "rgba(30,58,95,0.30)",
+  },
+  none: {
+    bg: "#1a1410",
+    edge: "#3a2818",
+    text: "#5a4a3a",
+    glow: "transparent",
+  },
+  today: {
+    bg: "#78350f",
+    edge: "#f59e0b",
+    text: "#fde68a",
+    glow: "rgba(245,158,11,0.70)",
+  },
+  future: {
+    bg: "#0a0a0f",
+    edge: "rgba(60,60,80,0.25)",
+    text: "#3a3340",
+    glow: "transparent",
+  },
+};
+
+// Four organic stone shapes — cycled by day index so the path looks
+// hand-laid rather than algorithmic.
+const STONE_SHAPES = [
+  "45% 55% 50% 60% / 55% 45% 60% 50%",
+  "52% 48% 60% 40% / 48% 60% 40% 52%",
+  "60% 40% 50% 55% / 50% 60% 45% 55%",
+  "50% 55% 45% 60% / 60% 40% 55% 45%",
+];
+
+function WindingPath({
+  todayISO,
+  byDate,
+  baseGoal,
+  personalGoal,
+  onDayClick,
+}: {
+  todayISO: string;
+  byDate: Map<string, number>;
+  baseGoal: number;
+  personalGoal: number;
+  onDayClick: (iso: string) => void;
+}) {
+  const today = new Date(todayISO + "T12:00:00");
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const todayDay = today.getDate();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const monthLabel = today.toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+
+  const days = useMemo(() => {
+    const out: Array<{
+      day: number;
+      iso: string;
+      steps: number;
+      status: StoneStatus;
+    }> = [];
+    for (let day = 1; day <= daysInMonth; day++) {
+      const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(
+        day
+      ).padStart(2, "0")}`;
+      const steps = byDate.get(iso) ?? 0;
+      let status: StoneStatus;
+      if (day === todayDay) status = "today";
+      else if (day > todayDay) status = "future";
+      else if (steps >= personalGoal) status = "personal";
+      else if (steps >= baseGoal) status = "met";
+      else if (steps > 0) status = "partial";
+      else status = "none";
+      out.push({ day, iso, steps, status });
+    }
+    return out;
+  }, [
+    daysInMonth,
+    year,
+    month,
+    todayDay,
+    byDate,
+    baseGoal,
+    personalGoal,
+  ]);
+
+  // Group into rows of 7 (day 1 = top-left, day 7 = top-right, etc.)
+  const rows = useMemo(() => {
+    const out: Array<Array<(typeof days)[number]>> = [];
+    for (let i = 0; i < days.length; i += 7) {
+      out.push(days.slice(i, i + 7));
+    }
+    return out;
+  }, [days]);
+
+  // Stone geometry — kept here so positioning math (vertical connector
+  // offset, road widths) stays in one place.
+  const STONE = 36;
+  const TODAY_STONE = 40;
+  const ROAD_LEN = 28;
+  const ROAD_W = 12;
+  const ROW_HALF_WIDTH = (7 * STONE + 6 * ROAD_LEN) / 2; // 210
+  // Distance from center of wrapper to the right edge of the last stone
+  // (or left edge of first stone, by symmetry). Used to anchor the
+  // vertical row connector under that stone.
+  const ROW_END_OFFSET = ROW_HALF_WIDTH - STONE / 2; // 192
+
+  return (
+    <section
+      className="relative rounded-md overflow-hidden"
+      style={{
+        background:
+          "radial-gradient(ellipse 90% 30% at 50% 0%, rgba(40,25,55,0.40) 0%, rgba(0,0,0,0) 65%), linear-gradient(180deg, #14080a 0%, #0d0905 35%, #050202 100%)",
+        border: "1px solid rgba(107,79,58,0.45)",
+        boxShadow:
+          "inset 0 1px 0 rgba(255,255,255,0.04), 0 6px 18px rgba(0,0,0,0.55)",
+        padding: "16px 20px 24px",
+      }}
+    >
+      {/* Distant mountains — pure decoration, very faint, behind everything */}
+      <svg
+        viewBox="0 0 600 90"
+        preserveAspectRatio="none"
+        aria-hidden
+        style={{
+          position: "absolute",
+          top: 40,
+          left: 0,
+          right: 0,
+          width: "100%",
+          height: 90,
+          opacity: 0.55,
+          pointerEvents: "none",
+          zIndex: 0,
+        }}
+      >
+        <defs>
+          <linearGradient id="kp-mt-far" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#1a1530" />
+            <stop offset="100%" stopColor="#0a0a14" />
+          </linearGradient>
+          <linearGradient id="kp-mt-near" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#0d0d1a" />
+            <stop offset="100%" stopColor="#050510" />
+          </linearGradient>
+        </defs>
+        <polygon
+          points="0,90 70,32 140,58 220,18 300,52 380,22 460,55 540,28 600,48 600,90"
+          fill="url(#kp-mt-far)"
+        />
+        <polygon
+          points="0,90 60,55 130,42 200,55 280,32 360,55 430,46 510,55 600,42 600,90"
+          fill="url(#kp-mt-near)"
+        />
+      </svg>
+
+      {/* Header */}
+      <div
+        className="relative flex items-center justify-between mb-4 pb-3 border-b border-bronze-deep/40"
+        style={{ zIndex: 5 }}
+      >
+        <div>
+          <div
+            className="text-[9px] uppercase tracking-[0.32em] text-gold/80"
+            style={fontDisplay}
+          >
+            The Knight's Path
+          </div>
+          <div
+            className="text-[14px] font-bold text-ink"
+            style={{
+              ...fontDisplay,
+              textShadow: "0 0 10px rgba(168,85,247,0.20)",
+            }}
+          >
+            {monthLabel}
+          </div>
+        </div>
+        <div
+          className="text-[10px] uppercase tracking-[0.22em] text-muted"
+          style={fontDisplay}
+        >
+          Day {todayDay} / {daysInMonth}
+        </div>
+      </div>
+
+      {/* Path landscape */}
+      <div className="relative" style={{ zIndex: 2, paddingTop: 12, paddingBottom: 14 }}>
+        {/* Dead trees — scattered along the path edges */}
+        <PathTree
+          style={{ position: "absolute", left: 6, top: 28, width: 30, height: 84, opacity: 0.55 }}
+        />
+        <PathTree
+          mirror
+          style={{ position: "absolute", right: 8, top: 130, width: 26, height: 70, opacity: 0.45 }}
+        />
+        <PathTree
+          style={{ position: "absolute", left: 18, top: 240, width: 24, height: 60, opacity: 0.40 }}
+        />
+        <PathTree
+          mirror
+          style={{ position: "absolute", right: 16, bottom: 30, width: 28, height: 76, opacity: 0.50 }}
+        />
+
+        {/* Rows */}
+        <div className="relative" style={{ zIndex: 3 }}>
+          {rows.map((row, rowIdx) => {
+            const reversed = rowIdx % 2 === 1;
+            const displayRow = reversed ? [...row].reverse() : row;
+            const isLastRow = rowIdx === rows.length - 1;
+            const connectorOnLeft = reversed;
+            const endDay = displayRow[displayRow.length - 1].day;
+            const verticalFuture = endDay >= todayDay;
+
+            return (
+              <div
+                key={rowIdx}
+                className="relative"
+                style={{ marginBottom: isLastRow ? 0 : 32 }}
+              >
+                {/* Stones + horizontal road segments */}
+                <div className="flex items-center justify-center" style={{ gap: 0 }}>
+                  {displayRow.flatMap((d, i, arr) => {
+                    const isRoad = i < arr.length - 1;
+                    const next = isRoad ? arr[i + 1] : null;
+                    const segFuture =
+                      !!next && (d.day >= todayDay || next.day >= todayDay);
+                    const items: React.ReactNode[] = [
+                      <PathStone
+                        key={d.iso}
+                        d={d}
+                        size={d.status === "today" ? TODAY_STONE : STONE}
+                        shape={STONE_SHAPES[(d.day - 1) % STONE_SHAPES.length]}
+                        onClick={() => onDayClick(d.iso)}
+                      />,
+                    ];
+                    if (isRoad) {
+                      items.push(
+                        <HorizontalRoad
+                          key={`${d.iso}-r`}
+                          width={ROAD_LEN}
+                          height={ROAD_W}
+                          future={segFuture}
+                        />
+                      );
+                    }
+                    return items;
+                  })}
+                </div>
+
+                {/* Vertical drop connecting this row to the next, aligned under the row's terminal stone */}
+                {!isLastRow && (
+                  <div
+                    aria-hidden
+                    style={{
+                      position: "absolute",
+                      top: "100%",
+                      height: 32,
+                      width: ROAD_W,
+                      [connectorOnLeft ? "left" : "right"]: `calc(50% - ${
+                        ROW_END_OFFSET + ROAD_W / 2
+                      }px)`,
+                      background: verticalFuture
+                        ? "linear-gradient(90deg, #050309 0%, #1a0f08 30%, #221408 50%, #1a0f08 70%, #050309 100%)"
+                        : "linear-gradient(90deg, #2a1808 0%, #3d2410 30%, #5c3d1e 50%, #3d2410 70%, #2a1808 100%)",
+                      boxShadow: "inset 0 0 6px rgba(0,0,0,0.55)",
+                      borderRadius: 2,
+                    }}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Fog overlay over the bottom — concentrates over the future portion of the month */}
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 bottom-0"
+          style={{
+            height: `${Math.max(20, 100 - (todayDay / daysInMonth) * 100)}%`,
+            background:
+              "linear-gradient(180deg, rgba(13,9,5,0) 0%, rgba(13,9,5,0.55) 55%, rgba(5,2,2,0.88) 100%)",
+            zIndex: 4,
+          }}
+        />
+      </div>
+
+      {/* Legend */}
+      <div
+        className="relative mt-5 flex flex-wrap gap-x-4 gap-y-1 text-[9px] uppercase tracking-[0.18em] text-muted/85"
+        style={{ ...fontDisplay, zIndex: 5 }}
+      >
+        <LegendDot color="#f59e0b" label="Today" />
+        <LegendDot color="#4c1d95" label="Goal met" />
+        <LegendDot color="#1e3a5f" label="Under goal" />
+        <LegendDot color="#1a1410" ring="#3a2818" label="No data" />
+      </div>
+
+      <style jsx>{`
+        @keyframes stonePulse {
+          0%,
+          100% {
+            box-shadow: 0 0 12px rgba(245, 158, 11, 0.55),
+              inset 0 -2px 4px rgba(0, 0, 0, 0.55),
+              inset 0 1px 0 rgba(255, 230, 180, 0.18);
+          }
+          50% {
+            box-shadow: 0 0 22px rgba(245, 158, 11, 0.95),
+              inset 0 -2px 4px rgba(0, 0, 0, 0.45),
+              inset 0 1px 0 rgba(255, 230, 180, 0.28);
+          }
+        }
+        @keyframes flameFlicker {
+          0%,
+          100% {
+            transform: translateY(0) scaleY(1);
+            opacity: 0.95;
+          }
+          50% {
+            transform: translateY(-1px) scaleY(1.08);
+            opacity: 1;
+          }
+        }
+        :global(.path-stone) {
+          position: relative;
+          padding: 0;
+          cursor: pointer;
+          font-family: var(--font-cinzel), Georgia, serif;
+          font-weight: 700;
+          line-height: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          transition: transform 160ms ease, filter 160ms ease;
+        }
+        :global(.path-stone:hover) {
+          transform: scale(1.10);
+          filter: brightness(1.15);
+        }
+        :global(.path-stone-today) {
+          animation: stonePulse 2s ease-in-out infinite;
+        }
+        :global(.path-flame) {
+          animation: flameFlicker 1.6s ease-in-out infinite;
+          transform-origin: center bottom;
+        }
+      `}</style>
+    </section>
+  );
+}
+
+// ─── Helpers used by the new path layout ──────────────────────────
+
+function PathStone({
+  d,
+  size,
+  shape,
+  onClick,
+}: {
+  d: {
+    day: number;
+    iso: string;
+    steps: number;
+    status: StoneStatus;
+  };
+  size: number;
+  shape: string;
+  onClick: () => void;
+}) {
+  const c = STONE_COLORS[d.status];
+  const isToday = d.status === "today";
+  const isFuture = d.status === "future";
+  const numberStyle: React.CSSProperties = {
+    color: c.text,
+    fontSize: size >= 40 ? 11 : 10,
+    filter: isFuture ? "blur(1px)" : undefined,
+    opacity: isFuture ? 0.35 : 1,
+    position: "absolute",
+    zIndex: 1,
+    textShadow: isToday
+      ? "0 1px 0 rgba(0,0,0,0.55)"
+      : "0 1px 0 rgba(0,0,0,0.55)",
+  };
+
+  // Inset shadow combo gives the carved/recessed surface feel.
+  const stoneShadow = isToday
+    ? `0 0 12px ${c.glow}, inset 0 -2px 4px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,230,180,0.20)`
+    : c.glow !== "transparent"
+    ? `0 0 8px ${c.glow}, inset 0 -2px 4px rgba(0,0,0,0.65), inset 0 1px 0 rgba(255,255,255,0.06)`
+    : `inset 0 -2px 4px rgba(0,0,0,0.7), inset 0 1px 0 rgba(255,255,255,0.04)`;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`${d.iso} · ${d.steps.toLocaleString()} steps`}
+      aria-label={`Day ${d.day}: ${d.steps.toLocaleString()} steps`}
+      className={`path-stone ${isToday ? "path-stone-today" : ""}`}
+      style={{
+        width: size,
+        height: size,
+        background: `radial-gradient(circle at 35% 30%, ${blendLighten(
+          c.bg,
+          0.15
+        )} 0%, ${c.bg} 55%, ${blendDarken(c.bg, 0.25)} 100%)`,
+        border: `1.5px solid ${c.edge}`,
+        borderRadius: shape,
+        color: c.text,
+        boxShadow: stoneShadow,
+        zIndex: isToday ? 2 : 1,
+      }}
+    >
+      {/* The day number sits behind the icon */}
+      <span style={numberStyle}>{d.day}</span>
+
+      {/* Status icon, layered above the number */}
+      {isToday ? (
+        <span
+          aria-hidden
+          style={{
+            position: "absolute",
+            top: -2,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: 3,
+          }}
+        >
+          <KnightIcon color="#fde68a" />
+        </span>
+      ) : d.status === "personal" || d.status === "met" ? (
+        <FlameIcon size={size >= 40 ? 14 : 12} />
+      ) : d.status === "partial" ? (
+        <FootprintIcon />
+      ) : d.status === "none" ? (
+        <SkullCross />
+      ) : null}
+    </button>
+  );
+}
+
+function HorizontalRoad({
+  width,
+  height,
+  future,
+}: {
+  width: number;
+  height: number;
+  future: boolean;
+}) {
+  return (
+    <span
+      aria-hidden
+      style={{
+        display: "inline-block",
+        width,
+        height,
+        margin: "0 -1px", // tiny overlap so the road meets the stone cleanly
+        background: future
+          ? "linear-gradient(180deg, #050309 0%, #1a0f08 30%, #221408 50%, #1a0f08 70%, #050309 100%)"
+          : "linear-gradient(180deg, #2a1808 0%, #3d2410 30%, #5c3d1e 50%, #3d2410 70%, #2a1808 100%)",
+        borderRadius: 2,
+        boxShadow: "inset 0 0 6px rgba(0,0,0,0.55)",
+        flex: "0 0 auto",
+      }}
+    />
+  );
+}
+
+function PathTree({
+  mirror,
+  style,
+}: {
+  mirror?: boolean;
+  style: React.CSSProperties;
+}) {
+  return (
+    <svg
+      viewBox="0 0 40 100"
+      aria-hidden
+      style={{
+        ...style,
+        pointerEvents: "none",
+        zIndex: 1,
+        transform: mirror ? "scaleX(-1)" : undefined,
+      }}
+    >
+      {/* Trunk */}
+      <path
+        d="M19 100 L20 60 L18 42 L19 28 L21 26"
+        stroke="#1a0f05"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        fill="none"
+      />
+      {/* Branches */}
+      <path d="M19 58 L8 40 L4 32" stroke="#1a0f05" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+      <path d="M19 52 L30 38 L34 30" stroke="#1a0f05" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+      <path d="M19 44 L10 30 L7 22" stroke="#1a0f05" strokeWidth="1.3" strokeLinecap="round" fill="none" />
+      <path d="M19 38 L28 26 L32 18" stroke="#1a0f05" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+      <path d="M19 32 L22 18 L24 10" stroke="#1a0f05" strokeWidth="1" strokeLinecap="round" fill="none" />
+      {/* Twigs */}
+      <path d="M8 40 L3 38" stroke="#1a0f05" strokeWidth="0.8" />
+      <path d="M30 38 L36 36" stroke="#1a0f05" strokeWidth="0.8" />
+      <path d="M10 30 L6 28" stroke="#1a0f05" strokeWidth="0.7" />
+      <path d="M28 26 L34 24" stroke="#1a0f05" strokeWidth="0.7" />
+    </svg>
+  );
+}
+
+function FlameIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg
+      viewBox="0 0 14 18"
+      width={size}
+      height={(size * 18) / 14}
+      aria-hidden
+      className="path-flame"
+      style={{ position: "absolute", zIndex: 2, filter: "drop-shadow(0 0 4px rgba(251,146,60,0.65))" }}
+    >
+      <defs>
+        <linearGradient id="kp-flame" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#fcd34d" />
+          <stop offset="55%" stopColor="#fb923c" />
+          <stop offset="100%" stopColor="#dc2626" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M7 1 C7 5 4 6 4 10 C4 13 5 15 7 15 C9 15 10 13 10 10 C10 8 9 7 9 4 C8 6 7 7 7 7 C7 5 7 3 7 1 Z"
+        fill="url(#kp-flame)"
+      />
+    </svg>
+  );
+}
+
+function FootprintIcon() {
+  return (
+    <svg
+      viewBox="0 0 14 16"
+      width="11"
+      height="13"
+      aria-hidden
+      style={{ position: "absolute", zIndex: 2, opacity: 0.85 }}
+    >
+      <ellipse cx="7" cy="11" rx="3.6" ry="4.2" fill="#6b8aaf" />
+      <circle cx="3.5" cy="3.5" r="1" fill="#6b8aaf" opacity="0.8" />
+      <circle cx="6" cy="2" r="1.1" fill="#6b8aaf" opacity="0.8" />
+      <circle cx="8.5" cy="2" r="1.1" fill="#6b8aaf" opacity="0.8" />
+      <circle cx="11" cy="3.5" r="1" fill="#6b8aaf" opacity="0.8" />
+    </svg>
+  );
+}
+
+function SkullCross() {
+  return (
+    <svg
+      viewBox="0 0 10 10"
+      width="8"
+      height="8"
+      aria-hidden
+      style={{ position: "absolute", zIndex: 2 }}
+    >
+      <path
+        d="M2 2 L8 8 M8 2 L2 8"
+        stroke="rgba(180,90,90,0.45)"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+// Quick HSL-free color tweaks so the radial highlight on each stone
+// reads as the "right" tint without needing per-state gradients.
+function blendLighten(hex: string, amt: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgb(${Math.min(255, Math.round(r + (255 - r) * amt))}, ${Math.min(
+    255,
+    Math.round(g + (255 - g) * amt)
+  )}, ${Math.min(255, Math.round(b + (255 - b) * amt))})`;
+}
+function blendDarken(hex: string, amt: number): string {
+  const { r, g, b } = hexToRgb(hex);
+  return `rgb(${Math.max(0, Math.round(r * (1 - amt)))}, ${Math.max(
+    0,
+    Math.round(g * (1 - amt))
+  )}, ${Math.max(0, Math.round(b * (1 - amt)))})`;
+}
+function hexToRgb(h: string): { r: number; g: number; b: number } {
+  const s = h.replace("#", "");
+  const v = s.length === 3 ? s.split("").map((c) => c + c).join("") : s;
+  return {
+    r: parseInt(v.slice(0, 2), 16),
+    g: parseInt(v.slice(2, 4), 16),
+    b: parseInt(v.slice(4, 6), 16),
+  };
+}
+
+function LegendDot({
+  color,
+  ring,
+  label,
+}: {
+  color: string;
+  ring?: string;
+  label: string;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span
+        aria-hidden
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: color,
+          border: ring ? `1px solid ${ring}` : undefined,
+          boxShadow:
+            color === "#f59e0b"
+              ? "0 0 4px rgba(245,158,11,0.6)"
+              : color === "#7c3aed"
+              ? "0 0 3px rgba(124,58,237,0.5)"
+              : undefined,
+        }}
+      />
+      {label}
+    </span>
+  );
+}
+
+function _UnusedSvgWindingPathRefActive_DELETE_ME({
+  todayISO,
+  byDate,
+  baseGoal,
+  personalGoal,
+  onDayClick,
+}: {
+  todayISO: string;
+  byDate: Map<string, number>;
+  baseGoal: number;
+  personalGoal: number;
+  onDayClick: (iso: string) => void;
+}) {
+  const today = new Date(todayISO + "T12:00:00");
+  const year = today.getFullYear();
+  const month = today.getMonth();
+  const todayDay = today.getDate();
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const monthLabel = today.toLocaleDateString(undefined, {
+    month: "long",
+    year: "numeric",
+  });
+
+  // Layout
+  const STEP = 100;
+  const PAD_TOP = 80;
+  const PAD_BOT = 80;
+  const VIEW_W = 600;
+  const VIEW_H = daysInMonth * STEP + PAD_TOP + PAD_BOT;
+  const CENTER_X = VIEW_W / 2;
+  const AMP = 140;
+
+  type Status =
+    | "personal"
+    | "met"
+    | "partial"
+    | "none"
+    | "today"
+    | "future";
+
+  const milestones = useMemo(() => {
+    const out: Array<{
+      day: number;
+      iso: string;
+      x: number;
+      y: number;
+      steps: number;
+      status: Status;
+    }> = [];
+    for (let i = 0; i < daysInMonth; i++) {
+      const day = i + 1;
+      const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(
+        day
+      ).padStart(2, "0")}`;
+      const steps = byDate.get(iso) ?? 0;
+      const y = PAD_TOP + i * STEP;
+      const x = CENTER_X + Math.sin(i * 0.55) * AMP;
+      let status: Status;
+      if (day === todayDay) status = "today";
+      else if (day > todayDay) status = "future";
+      else if (steps >= personalGoal) status = "personal";
+      else if (steps >= baseGoal) status = "met";
+      else if (steps > 0) status = "partial";
+      else status = "none";
+      out.push({ day, iso, x, y, steps, status });
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [byDate, daysInMonth, year, month, todayDay, baseGoal, personalGoal]);
+
+  // Smooth bezier path connecting all milestones (top → bottom).
+  const pathD = useMemo(() => {
+    if (milestones.length === 0) return "";
+    const first = milestones[0];
+    let d = `M ${first.x} 0 L ${first.x} ${first.y}`;
+    for (let i = 1; i < milestones.length; i++) {
+      const prev = milestones[i - 1];
+      const cur = milestones[i];
+      const midY = (prev.y + cur.y) / 2;
+      d += ` C ${prev.x} ${midY}, ${cur.x} ${midY}, ${cur.x} ${cur.y}`;
+    }
+    const last = milestones[milestones.length - 1];
+    d += ` L ${last.x} ${VIEW_H}`;
+    return d;
+  }, [milestones, VIEW_H]);
+
+  // Lantern post positions — every 4 days, alternating sides.
+  const lanterns = useMemo(() => {
+    return milestones
+      .filter((_, i) => i % 4 === 2)
+      .map((m, idx) => ({
+        x: m.x + (idx % 2 === 0 ? -90 : 90),
+        y: m.y,
+        side: (idx % 2 === 0 ? "L" : "R") as "L" | "R",
+      }));
+  }, [milestones]);
+
+  return (
+    <section
+      className="relative rounded-md overflow-hidden"
+      style={{
+        background:
+          "radial-gradient(ellipse 90% 40% at 50% 0%, rgba(40,30,60,0.30) 0%, rgba(0,0,0,0) 60%), linear-gradient(180deg, #0a0810 0%, #050306 100%)",
+        border: "1px solid rgba(107,79,58,0.45)",
+        boxShadow:
+          "inset 0 1px 0 rgba(255,255,255,0.04), 0 6px 18px rgba(0,0,0,0.55)",
+      }}
+    >
+      {/* Header strip */}
+      <div
+        className="flex items-center justify-between px-4 py-3 border-b border-bronze-deep/40"
+        style={{
+          background:
+            "linear-gradient(180deg, rgba(40,30,15,0.30), rgba(20,12,30,0.20))",
+        }}
+      >
+        <div>
+          <div
+            className="text-[9px] uppercase tracking-[0.32em] text-gold/80"
+            style={fontDisplay}
+          >
+            The Knight's Path
+          </div>
+          <div
+            className="text-[14px] font-bold text-ink"
+            style={{
+              ...fontDisplay,
+              textShadow: "0 0 10px rgba(168,85,247,0.20)",
+            }}
+          >
+            {monthLabel}
+          </div>
+        </div>
+        <div
+          className="text-[10px] uppercase tracking-[0.22em] text-muted"
+          style={fontDisplay}
+        >
+          Day {todayDay} / {daysInMonth}
+        </div>
+      </div>
+
+      {/* The path itself */}
+      <div className="relative" style={{ width: "100%" }}>
+        <svg
+          viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+          width="100%"
+          height="auto"
+          aria-label={`Knight's path through ${monthLabel}`}
+          style={{ display: "block" }}
+        >
+          <defs>
+            <radialGradient id="met-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#fde68a" stopOpacity="0.7" />
+              <stop offset="60%" stopColor="#f59e0b" stopOpacity="0.25" />
+              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0" />
+            </radialGradient>
+            <radialGradient id="today-glow" cx="50%" cy="50%" r="50%">
+              <stop offset="0%" stopColor="#fef3c7" stopOpacity="0.85" />
+              <stop offset="50%" stopColor="#d4a020" stopOpacity="0.45" />
+              <stop offset="100%" stopColor="#d4a020" stopOpacity="0" />
+            </radialGradient>
+            <radialGradient id="flame-grad" cx="50%" cy="40%" r="55%">
+              <stop offset="0%" stopColor="#fde68a" />
+              <stop offset="55%" stopColor="#f59e0b" />
+              <stop offset="100%" stopColor="rgba(245,158,11,0)" />
+            </radialGradient>
+            <radialGradient id="lantern-grad" cx="50%" cy="40%" r="55%">
+              <stop offset="0%" stopColor="#fff3b0" />
+              <stop offset="60%" stopColor="#f59e0b" stopOpacity="0.6" />
+              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0" />
+            </radialGradient>
+            {/* Stone gradient for milestones */}
+            <radialGradient id="stone-bright" cx="35%" cy="30%" r="70%">
+              <stop offset="0%" stopColor="#5a564e" />
+              <stop offset="100%" stopColor="#1a1a1c" />
+            </radialGradient>
+            <radialGradient id="stone-cold" cx="35%" cy="30%" r="70%">
+              <stop offset="0%" stopColor="#3a3a45" />
+              <stop offset="100%" stopColor="#0c0c12" />
+            </radialGradient>
+            {/* Cobblestone pattern */}
+            <pattern
+              id="cobble"
+              x="0"
+              y="0"
+              width="14"
+              height="14"
+              patternUnits="userSpaceOnUse"
+              patternTransform="rotate(20)"
+            >
+              <rect width="14" height="14" fill="#3a2c20" />
+              <path
+                d="M0 0 L14 0 L14 14 L0 14 Z"
+                fill="none"
+                stroke="#1f1610"
+                strokeWidth="1.2"
+              />
+              <circle cx="7" cy="7" r="2.4" fill="#4a3826" opacity="0.6" />
+            </pattern>
+            {/* Mist filter */}
+            <filter id="mist" x="-20%" y="-20%" width="140%" height="140%">
+              <feGaussianBlur stdDeviation="6" />
+            </filter>
+          </defs>
+
+          {/* Background landscape — silhouettes */}
+          <g opacity="0.55">
+            {/* Distant mountains across the top */}
+            <path
+              d={`M 0 60 L 80 30 L 160 60 L 220 20 L 300 50 L 380 18 L 460 55 L 540 25 L ${VIEW_W} 60 L ${VIEW_W} 0 L 0 0 Z`}
+              fill="#1a1622"
+            />
+            <path
+              d={`M 0 80 L 90 50 L 180 75 L 270 40 L 370 70 L 470 38 L 560 65 L ${VIEW_W} 50 L ${VIEW_W} 0 L 0 0 Z`}
+              fill="#0e0c14"
+            />
+          </g>
+
+          {/* Forest silhouettes — scattered trees on either side */}
+          {Array.from({ length: Math.floor(daysInMonth * 1.6) }).map((_, i) => {
+            // Pseudo-random but stable layout
+            const seed = i * 73;
+            const yOff = ((seed * 17) % VIEW_H) | 0;
+            const left = i % 2 === 0;
+            const xJitter = ((seed * 11) % 80) - 40;
+            const baseX = left ? 30 + ((seed * 5) % 60) : VIEW_W - 60 - ((seed * 5) % 60);
+            const x = baseX + xJitter;
+            const h = 30 + ((seed * 3) % 50);
+            const opacity = 0.35 + ((seed % 4) / 10);
+            return (
+              <g key={`tree-${i}`} transform={`translate(${x}, ${yOff})`} opacity={opacity}>
+                <path
+                  d={`M 0 0 L -10 ${h * 0.55} L -5 ${h * 0.55} L -12 ${h} L 12 ${h} L 5 ${h * 0.55} L 10 ${h * 0.55} Z`}
+                  fill="#0a0810"
+                />
+              </g>
+            );
+          })}
+
+          {/* The road — drawn three layers thick for depth */}
+          <path
+            d={pathD}
+            stroke="#1a0e08"
+            strokeWidth="130"
+            fill="none"
+            strokeLinecap="round"
+          />
+          <path
+            d={pathD}
+            stroke="url(#cobble)"
+            strokeWidth="120"
+            fill="none"
+            strokeLinecap="round"
+            opacity="0.95"
+          />
+          <path
+            d={pathD}
+            stroke="rgba(0,0,0,0.35)"
+            strokeWidth="120"
+            strokeDasharray="4 8"
+            fill="none"
+            strokeLinecap="round"
+            opacity="0.4"
+          />
+          {/* Path edges */}
+          <path
+            d={pathD}
+            stroke="#5a3a1f"
+            strokeWidth="124"
+            fill="none"
+            strokeLinecap="round"
+            opacity="0"
+          />
+
+          {/* Lantern posts on path edges */}
+          {lanterns.map((l, i) => (
+            <g key={`lantern-${i}`} transform={`translate(${l.x}, ${l.y})`}>
+              {/* Glow halo */}
+              <circle r="22" fill="url(#lantern-grad)" opacity="0.6" />
+              {/* Post */}
+              <line
+                x1="0"
+                y1="0"
+                x2="0"
+                y2="22"
+                stroke="#3a2818"
+                strokeWidth="2"
+              />
+              {/* Lantern body */}
+              <rect
+                x="-4"
+                y="-10"
+                width="8"
+                height="10"
+                fill="#3a2a18"
+                stroke="#1a0f08"
+                strokeWidth="0.5"
+              />
+              <rect x="-3" y="-9" width="6" height="8" fill="#f59e0b" opacity="0.85">
+                <animate
+                  attributeName="opacity"
+                  values="0.85;0.65;0.85;0.95;0.85"
+                  dur="3.2s"
+                  repeatCount="indefinite"
+                />
+              </rect>
+            </g>
+          ))}
+
+          {/* Milestone stones */}
+          {milestones.map((m) => (
+            <Milestone
+              key={m.iso}
+              {...m}
+              onClick={() => onDayClick(m.iso)}
+            />
+          ))}
+
+          {/* Fog overlay over future milestones */}
+          {milestones
+            .filter((m) => m.status === "future")
+            .map((m, i) => (
+              <ellipse
+                key={`fog-${i}`}
+                cx={m.x}
+                cy={m.y}
+                rx="80"
+                ry="38"
+                fill="#0a0810"
+                opacity="0.55"
+                filter="url(#mist)"
+              />
+            ))}
+        </svg>
+      </div>
+
+      <style jsx>{`
+        :global(.knight-breathe) {
+          transform-box: fill-box;
+          transform-origin: center bottom;
+          animation: knightBreathe 3.2s ease-in-out infinite;
+        }
+        @keyframes knightBreathe {
+          0%,
+          100% {
+            transform: scale(1);
+          }
+          50% {
+            transform: scale(1.025);
+          }
+        }
+        :global(.flame-flicker) {
+          transform-box: fill-box;
+          transform-origin: center bottom;
+          animation: flameFlicker 1.6s ease-in-out infinite;
+        }
+        @keyframes flameFlicker {
+          0%,
+          100% {
+            transform: scaleY(1) scaleX(1);
+          }
+          50% {
+            transform: scaleY(0.92) scaleX(1.05);
+          }
+        }
+      `}</style>
+    </section>
+  );
+}
+
+function Milestone({
+  day,
+  x,
+  y,
+  steps,
+  status,
+  onClick,
+}: {
+  day: number;
+  iso: string;
+  x: number;
+  y: number;
+  steps: number;
+  status: "personal" | "met" | "partial" | "none" | "today" | "future";
+  onClick: () => void;
+}) {
+  const isFuture = status === "future";
+  const isToday = status === "today";
+  const isLit =
+    status === "personal" || status === "met" || status === "today";
+  const stoneFill =
+    status === "personal" || status === "met"
+      ? "url(#stone-bright)"
+      : "url(#stone-cold)";
+  const ringColor =
+    status === "personal"
+      ? "#d4a020"
+      : status === "met"
+      ? "#a855f7"
+      : status === "partial"
+      ? "#3a5a8a"
+      : status === "today"
+      ? "#fef3c7"
+      : "#3a3a45";
+  const numberColor = isToday
+    ? "#1a0f08"
+    : isFuture
+    ? "#3a3340"
+    : "#f5e6c4";
+
+  return (
+    <g
+      transform={`translate(${x}, ${y})`}
+      onClick={onClick}
+      style={{ cursor: isFuture ? "default" : "pointer" }}
+      aria-label={`Day ${day} — ${steps.toLocaleString()} steps`}
+    >
+      {/* Glow halo */}
+      {status === "personal" && (
+        <circle r="42" fill="url(#met-glow)" />
+      )}
+      {isToday && <circle r="50" fill="url(#today-glow)" />}
+
+      {/* Stone shadow */}
+      <ellipse cx="3" cy="6" rx="22" ry="6" fill="rgba(0,0,0,0.55)" />
+
+      {/* Outer ring */}
+      <circle
+        r="26"
+        fill={stoneFill}
+        stroke={ringColor}
+        strokeWidth={isToday ? 3 : 1.5}
+        opacity={isFuture ? 0.55 : 1}
+        style={
+          isLit
+            ? { filter: `drop-shadow(0 0 6px ${ringColor})` }
+            : undefined
+        }
+      />
+      {/* Inner cracks */}
+      <path
+        d="M -10 -6 L -3 0 L -8 6"
+        stroke="rgba(0,0,0,0.45)"
+        strokeWidth="0.7"
+        fill="none"
+        opacity={isFuture ? 0.3 : 0.7}
+      />
+      <path
+        d="M 8 -8 L 12 -2 L 7 4"
+        stroke="rgba(0,0,0,0.45)"
+        strokeWidth="0.7"
+        fill="none"
+        opacity={isFuture ? 0.3 : 0.7}
+      />
+
+      {/* Date number */}
+      <text
+        x="0"
+        y="5"
+        textAnchor="middle"
+        fontSize="14"
+        fontWeight="700"
+        fill={numberColor}
+        style={{
+          fontFamily: "var(--font-cinzel), Georgia, serif",
+          textShadow: isToday ? "0 0 4px #fef3c7" : "0 1px 0 rgba(0,0,0,0.7)",
+          opacity: isFuture ? 0.5 : 1,
+        }}
+      >
+        {day}
+      </text>
+
+      {/* Torch flame above goal-met stones */}
+      {(status === "personal" || status === "met") && (
+        <g transform="translate(0, -36)" className="flame-flicker">
+          <ellipse cx="0" cy="0" rx="5" ry="9" fill="url(#flame-grad)" />
+          <ellipse cx="0" cy="2" rx="2" ry="4" fill="#fef3c7" opacity="0.85" />
+        </g>
+      )}
+
+      {/* Knight on today */}
+      {isToday && (
+        <g transform="translate(0, -52)" className="knight-breathe">
+          <KnightFigure />
+        </g>
+      )}
+    </g>
+  );
+}
+
+function KnightFigure() {
+  return (
+    <g>
+      {/* Plume */}
+      <path
+        d="M 0 -22 Q 4 -28 0 -32 Q -4 -28 0 -22"
+        fill="#a83232"
+        stroke="#5a1818"
+        strokeWidth="0.4"
+      />
+      {/* Helmet */}
+      <ellipse cx="0" cy="-15" rx="6" ry="7" fill="#3a3a45" stroke="#1a0f08" strokeWidth="0.6" />
+      <rect x="-5" y="-16" width="10" height="2.5" fill="#1a0f08" />
+      {/* Body / armor */}
+      <path
+        d="M -7 -8 Q -8 0 -6 7 L 6 7 Q 8 0 7 -8 Z"
+        fill="#2c2c34"
+        stroke="#0c0c10"
+        strokeWidth="0.6"
+      />
+      <line x1="0" y1="-6" x2="0" y2="6" stroke="#1a1a1f" strokeWidth="0.6" />
+      {/* Shield */}
+      <path
+        d="M -13 -4 L -13 4 L -8 8 L -8 -4 Z"
+        fill="#7f1d1d"
+        stroke="#1a0f08"
+        strokeWidth="0.6"
+      />
+      <path
+        d="M -11.5 -2 L -10 -2 M -11.5 0 L -10 0 M -11.5 2 L -10 2"
+        stroke="#d4a020"
+        strokeWidth="0.4"
+      />
+      {/* Sword */}
+      <line
+        x1="9"
+        y1="-10"
+        x2="13"
+        y2="6"
+        stroke="#c8c8d2"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+      />
+      <rect x="8.5" y="6" width="5" height="1.5" fill="#5a3a1a" />
+      {/* Legs */}
+      <rect x="-4" y="7" width="3" height="6" fill="#2c2c34" />
+      <rect x="1" y="7" width="3" height="6" fill="#2c2c34" />
+      {/* Feet shadow */}
+      <ellipse cx="0" cy="14" rx="7" ry="1.5" fill="rgba(0,0,0,0.5)" />
+    </g>
+  );
+}
 
 function RoadOfTrials({
   userId,

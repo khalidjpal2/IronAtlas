@@ -46,24 +46,12 @@ export default function WorkoutPresets({
     null
   );
   const [sessionPreset, setSessionPreset] = useState<WorkoutPreset | null>(null);
+  // Detail-popup state — clicking a compact card opens the popup.
+  const [detailPreset, setDetailPreset] = useState<{
+    preset: WorkoutPreset;
+    colorIndex: number;
+  } | null>(null);
   const router = useRouter();
-  const [busyId, setBusyId] = useState<string | null>(null);
-
-  async function deletePreset(p: WorkoutPreset) {
-    if (!window.confirm(`Delete preset "${p.name}"? This can't be undone.`))
-      return;
-    setBusyId(p.id);
-    try {
-      const res = await fetch(`/api/presets/${p.id}`, { method: "DELETE" });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
-      router.refresh();
-    } catch (e: any) {
-      alert(e?.message ?? "Failed to delete preset.");
-    } finally {
-      setBusyId(null);
-    }
-  }
 
   return (
     <section>
@@ -75,39 +63,20 @@ export default function WorkoutPresets({
           My Presets
         </h2>
         <div className="rune-divider flex-1" />
-        <button
-          type="button"
-          onClick={() => setEditorPreset("new")}
-          className="btn-stone btn-stone-ghost text-[10px]"
-          style={{ padding: "0.5rem 0.9rem" }}
-        >
-          Create Preset +
-        </button>
       </div>
 
-      {presets.length === 0 ? (
-        <div className="tablet relative rounded p-6 text-center">
-          <span className="corner-bl" />
-          <span className="corner-br" />
-          <p className="text-sm text-muted italic">
-            No presets yet. Create one to play back a workout routine in a
-            single tap.
-          </p>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-          {presets.map((p) => (
-            <PresetCard
-              key={p.id}
-              preset={p}
-              busy={busyId === p.id}
-              onStart={() => setSessionPreset(p)}
-              onEdit={() => setEditorPreset(p)}
-              onDelete={() => deletePreset(p)}
-            />
-          ))}
-        </div>
-      )}
+      {/* Wrapping flex of compact pills + create tile */}
+      <div className="flex flex-wrap gap-2.5">
+        {presets.map((p, i) => (
+          <CompactPresetCard
+            key={p.id}
+            preset={p}
+            colorIndex={i}
+            onClick={() => setDetailPreset({ preset: p, colorIndex: i })}
+          />
+        ))}
+        <CompactCreateTile onClick={() => setEditorPreset("new")} />
+      </div>
 
       {editorPreset && (
         <PresetEditorModal
@@ -133,92 +102,478 @@ export default function WorkoutPresets({
           }}
         />
       )}
+
+      {detailPreset && (
+        <PresetDetailModal
+          preset={detailPreset.preset}
+          colorIndex={detailPreset.colorIndex}
+          lastByExercise={lastByExercise}
+          onClose={() => setDetailPreset(null)}
+          onStart={() => {
+            const p = detailPreset.preset;
+            setDetailPreset(null);
+            setSessionPreset(p);
+          }}
+          onEdit={() => {
+            const p = detailPreset.preset;
+            setDetailPreset(null);
+            setEditorPreset(p);
+          }}
+          onDelete={async () => {
+            const p = detailPreset.preset;
+            if (
+              !window.confirm(
+                `Delete preset "${p.name}"? This can't be undone.`
+              )
+            )
+              return;
+            try {
+              const res = await fetch(`/api/presets/${p.id}`, {
+                method: "DELETE",
+              });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+              setDetailPreset(null);
+              router.refresh();
+            } catch (e: any) {
+              alert(e?.message ?? "Failed to delete preset.");
+            }
+          }}
+        />
+      )}
     </section>
   );
 }
 
-// ─── Preset Card ───────────────────────────────────────────────────
-function PresetCard({
+// Cycling palette — deep, rich tones layered over a near-black base.
+const PRESET_COLORS = [
+  "#3b0764", // deep purple
+  "#7f1d1d", // deep crimson
+  "#14532d", // forest green
+  "#78350f", // dark amber
+  "#1e3a5f", // deep navy
+  "#4a1d96", // violet
+  "#064e3b", // dark emerald
+  "#713f12", // dark gold
+];
+
+export function presetColor(index: number): string {
+  return PRESET_COLORS[index % PRESET_COLORS.length];
+}
+
+// ─── Compact Preset Pill ───────────────────────────────────────────
+function CompactPresetCard({
   preset,
-  onStart,
-  onEdit,
-  onDelete,
-  busy,
+  colorIndex,
+  onClick,
 }: {
   preset: WorkoutPreset;
-  onStart: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
-  busy: boolean;
+  colorIndex: number;
+  onClick: () => void;
 }) {
+  const accent = presetColor(colorIndex);
+  const count = preset.exercises.length;
   return (
-    <article className="tablet relative rounded p-4 flex flex-col gap-3">
-      <span className="corner-bl" />
-      <span className="corner-br" />
-      <header className="flex items-start justify-between gap-2">
+    <button
+      type="button"
+      onClick={onClick}
+      className="compact-preset relative flex flex-col justify-between text-left transition"
+      style={{
+        width: 160,
+        minHeight: 60,
+        background: `#0c0a0f`,
+        backgroundImage: [
+          `linear-gradient(90deg, ${accent}33 0%, ${accent}10 100%)`,
+          "var(--noise-bg)",
+        ].join(", "),
+        borderTop: `1px solid ${accent}55`,
+        borderRight: `1px solid ${accent}55`,
+        borderBottom: `1px solid ${accent}55`,
+        borderLeft: `4px solid ${accent}`,
+        borderRadius: 4,
+        padding: "8px 10px 8px 12px",
+        boxShadow: `0 2px 8px rgba(0,0,0,0.45), 0 0 8px ${accent}22`,
+        cursor: "pointer",
+      }}
+      aria-label={`Open ${preset.name} preset (${count} exercises)`}
+    >
+      <div className="flex items-start justify-between gap-2 leading-none">
         <h3
-          className="text-base font-bold tracking-tight text-ink truncate"
-          style={fontDisplay}
+          className="font-bold tracking-tight truncate"
+          style={{
+            ...fontDisplay,
+            fontSize: 13,
+            color: "#f5efe2",
+            textShadow: "0 1px 0 rgba(0,0,0,0.6)",
+            letterSpacing: "0.04em",
+          }}
         >
           {preset.name}
         </h3>
-        <div className="flex items-center gap-1 shrink-0">
+        <span
+          aria-hidden
+          style={{
+            color: accent,
+            fontSize: 16,
+            lineHeight: 1,
+            opacity: 0.85,
+            marginTop: -1,
+          }}
+        >
+          ›
+        </span>
+      </div>
+      <div
+        className="flex items-baseline justify-between mt-1"
+        style={{
+          ...fontDisplay,
+          fontSize: 9.5,
+          letterSpacing: "0.20em",
+          textTransform: "uppercase",
+          color: "rgba(245,239,226,0.55)",
+        }}
+      >
+        <span>
+          {count} exercise{count === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      <style jsx>{`
+        .compact-preset {
+          transform: translateY(0);
+          transition: transform 140ms ease, filter 140ms ease,
+            box-shadow 140ms ease;
+        }
+        .compact-preset:hover {
+          transform: translateY(-2px);
+          filter: brightness(1.12);
+        }
+      `}</style>
+    </button>
+  );
+}
+
+// ─── Compact Create Tile ───────────────────────────────────────────
+function CompactCreateTile({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-center justify-center gap-2 transition hover:brightness-110"
+      style={{
+        width: 160,
+        minHeight: 60,
+        background: "rgba(20,14,30,0.55)",
+        border: "2px dashed rgba(184,134,11,0.55)",
+        borderRadius: 4,
+        color: "#d4a020",
+        padding: "8px 10px",
+      }}
+      aria-label="Create new preset"
+    >
+      <span
+        aria-hidden
+        style={{
+          fontSize: 18,
+          lineHeight: 1,
+          fontWeight: 300,
+        }}
+      >
+        +
+      </span>
+      <span
+        className="font-bold"
+        style={{
+          ...fontDisplay,
+          fontSize: 10,
+          letterSpacing: "0.22em",
+          textTransform: "uppercase",
+        }}
+      >
+        New Preset
+      </span>
+    </button>
+  );
+}
+
+// ─── Preset Detail Modal — opens on click ──────────────────────────
+function PresetDetailModal({
+  preset,
+  colorIndex,
+  lastByExercise,
+  onClose,
+  onStart,
+  onEdit,
+  onDelete,
+}: {
+  preset: WorkoutPreset;
+  colorIndex: number;
+  lastByExercise: LastSetByExercise;
+  onClose: () => void;
+  onStart: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const accent = presetColor(colorIndex);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal
+    >
+      <div
+        aria-hidden
+        className="absolute inset-0"
+        style={{ background: "rgba(0,0,0,0.65)", backdropFilter: "blur(2px)" }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full flex flex-col"
+        style={{
+          maxWidth: 460,
+          maxHeight: "calc(100vh - 32px)",
+          background: "#0c0a0f",
+          backgroundImage: [
+            `linear-gradient(180deg, ${accent}33 0%, ${accent}11 100%)`,
+            "var(--noise-bg)",
+          ].join(", "),
+          border: `1px solid ${accent}88`,
+          borderTop: `4px solid ${accent}`,
+          borderRadius: 6,
+          padding: "20px 22px",
+          boxShadow: [
+            "inset 0 1px 0 rgba(255,255,255,0.06)",
+            `0 0 18px ${accent}33`,
+            "0 24px 64px rgba(0,0,0,0.7)",
+          ].join(", "),
+        }}
+      >
+        {/* Header */}
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="min-w-0">
+            <h2
+              className="text-xl font-bold tracking-tight truncate"
+              style={{
+                ...fontDisplay,
+                color: "#f5efe2",
+                textShadow: `0 1px 0 rgba(0,0,0,0.6), 0 0 12px ${accent}66`,
+              }}
+            >
+              {preset.name}
+            </h2>
+            <div
+              className="mt-1"
+              style={{
+                ...fontDisplay,
+                fontSize: 10,
+                letterSpacing: "0.24em",
+                textTransform: "uppercase",
+                color: "rgba(245,239,226,0.55)",
+              }}
+            >
+              {preset.exercises.length} exercise
+              {preset.exercises.length === 1 ? "" : "s"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-2xl w-8 h-8 flex items-center justify-center"
+            style={{ color: "rgba(245,239,226,0.65)" }}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div
+          aria-hidden
+          className="h-px mb-4"
+          style={{ background: "rgba(255,255,255,0.18)" }}
+        />
+
+        {/* Exercise list with last-logged + target suggestion */}
+        <ul className="flex-1 overflow-y-auto space-y-3 pr-1 mb-4">
+          {preset.exercises.length === 0 ? (
+            <li
+              className="italic text-[12px]"
+              style={{ color: "rgba(245,239,226,0.55)" }}
+            >
+              No exercises in this preset.
+            </li>
+          ) : (
+            preset.exercises.map((ex, i) => {
+              const last = lastByExercise[ex.exerciseName];
+              const target = last ? suggestTarget(last.weight) : null;
+              return (
+                <li
+                  key={`${ex.id ?? i}`}
+                  className="rounded p-2.5"
+                  style={{
+                    background: "rgba(0,0,0,0.30)",
+                    border: "1px solid rgba(255,255,255,0.06)",
+                  }}
+                >
+                  <div className="flex items-baseline justify-between gap-2 mb-1">
+                    <div
+                      className="text-[13px] font-bold truncate"
+                      style={{
+                        ...fontDisplay,
+                        color: "#f5efe2",
+                      }}
+                    >
+                      {ex.exerciseName}
+                    </div>
+                    <div
+                      className="text-[9px] uppercase tracking-[0.18em] shrink-0"
+                      style={{
+                        ...fontDisplay,
+                        color: "rgba(245,239,226,0.45)",
+                      }}
+                    >
+                      {ZONE_LABEL[ex.muscleGroup as Zone] ?? ex.muscleGroup}
+                    </div>
+                  </div>
+                  {last ? (
+                    <>
+                      <div
+                        className="text-[11px] tabular-nums"
+                        style={{ color: "rgba(245,239,226,0.78)" }}
+                      >
+                        Last:{" "}
+                        <span style={{ color: "#f5efe2", fontWeight: 600 }}>
+                          {last.weight} × {last.reps} × {last.sets}
+                        </span>
+                        <span style={{ color: "rgba(245,239,226,0.45)" }}>
+                          {" "}
+                          · {formatDate(last.date)}
+                        </span>
+                      </div>
+                      {target && target.diff > 0 && (
+                        <div
+                          className="text-[11px] tabular-nums mt-0.5"
+                          style={{ color: "#d4a020" }}
+                        >
+                          Target:{" "}
+                          <span style={{ fontWeight: 700 }}>
+                            {target.target} lbs
+                          </span>{" "}
+                          <span style={{ opacity: 0.75 }}>
+                            (try +{target.diff} lbs)
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div
+                      className="text-[11px] italic"
+                      style={{ color: "rgba(245,239,226,0.55)" }}
+                    >
+                      First time — start light and build up
+                    </div>
+                  )}
+                </li>
+              );
+            })
+          )}
+        </ul>
+
+        {/* Start session — full-width purple */}
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={preset.exercises.length === 0}
+          className="w-full transition disabled:opacity-50 disabled:cursor-not-allowed hover:brightness-110 active:translate-y-px"
+          style={{
+            ...fontDisplay,
+            fontSize: 13,
+            letterSpacing: "0.26em",
+            textTransform: "uppercase",
+            fontWeight: 800,
+            color: "#f5efe2",
+            textShadow: "0 1px 0 rgba(0,0,0,0.6)",
+            padding: "12px 16px",
+            borderRadius: 4,
+            background: "linear-gradient(180deg, #7747b0 0%, #3a2466 100%)",
+            border: "1px solid #7747b0",
+            boxShadow: [
+              "inset 0 1px 0 rgba(255,255,255,0.18)",
+              "inset 0 -2px 0 rgba(0,0,0,0.30)",
+              "0 0 12px rgba(119,71,176,0.55)",
+            ].join(", "),
+          }}
+        >
+          Start Session
+        </button>
+
+        {/* Edit + Delete — small footer links */}
+        <div className="text-center mt-3 flex items-center justify-center gap-4">
           <button
             type="button"
             onClick={onEdit}
-            disabled={busy}
-            className="w-7 h-7 flex items-center justify-center rounded text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 transition"
-            title="Edit preset"
-            aria-label="Edit preset"
+            className="transition hover:brightness-125"
+            style={{
+              ...fontDisplay,
+              fontSize: 10,
+              letterSpacing: "0.22em",
+              textTransform: "uppercase",
+              color: "rgba(245,239,226,0.55)",
+              background: "transparent",
+              border: "none",
+              padding: 0,
+            }}
           >
-            <PencilIcon />
+            ✎ Edit Preset
           </button>
+          <span style={{ color: "rgba(245,239,226,0.25)" }} aria-hidden>
+            ·
+          </span>
           <button
             type="button"
             onClick={onDelete}
-            disabled={busy}
-            className="w-7 h-7 flex items-center justify-center rounded text-muted hover:text-danger hover:bg-danger/10 disabled:opacity-40 transition"
-            title="Delete preset"
-            aria-label="Delete preset"
+            className="transition hover:brightness-125"
+            style={{
+              ...fontDisplay,
+              fontSize: 10,
+              letterSpacing: "0.22em",
+              textTransform: "uppercase",
+              color: "rgba(220,80,80,0.65)",
+              background: "transparent",
+              border: "none",
+              padding: 0,
+            }}
           >
-            <TrashIcon />
+            🗑 Delete
           </button>
         </div>
-      </header>
-
-      <ul className="text-[11px] text-muted space-y-0.5 max-h-32 overflow-y-auto">
-        {preset.exercises.length === 0 ? (
-          <li className="italic">No exercises</li>
-        ) : (
-          preset.exercises.map((ex, i) => (
-            <li key={`${ex.id ?? i}`} className="truncate">
-              <span className="text-ink/80">{ex.exerciseName}</span>{" "}
-              <span className="text-muted/60">·</span>{" "}
-              <span className="uppercase tracking-[0.16em] text-[10px]">
-                {ZONE_LABEL[ex.muscleGroup as Zone] ?? ex.muscleGroup}
-              </span>
-            </li>
-          ))
-        )}
-      </ul>
-
-      <button
-        type="button"
-        onClick={onStart}
-        disabled={busy || preset.exercises.length === 0}
-        className="btn-stone w-full text-[11px]"
-        style={{
-          ...fontDisplay,
-          letterSpacing: "0.22em",
-          background: "linear-gradient(180deg, #7747b0, #3a2466)",
-          borderColor: "#7747b0",
-          color: "#f0e6ff",
-        }}
-      >
-        Start Session
-      </button>
-    </article>
+      </div>
+    </div>
   );
+}
+
+// Progressive overload suggestion — +4% from last weight, rounded to
+// the nearest 2.5 lb plate, with a floor of +2.5 lb so the suggestion
+// is always meaningful.
+function suggestTarget(lastWeight: number): { target: number; diff: number } {
+  if (lastWeight <= 0) return { target: 0, diff: 0 };
+  const raw = lastWeight * 1.04;
+  let target = Math.round(raw / 2.5) * 2.5;
+  let diff = target - lastWeight;
+  if (diff < 2.5) {
+    target = lastWeight + 2.5;
+    diff = 2.5;
+  }
+  return { target, diff };
 }
 
 // ─── Preset Editor (create + edit) ─────────────────────────────────
@@ -534,7 +889,7 @@ type SessionRow = {
   saved?: boolean; // pulses briefly after save
 };
 
-function StartSessionModal({
+export function StartSessionModal({
   userId,
   preset,
   lastByExercise,

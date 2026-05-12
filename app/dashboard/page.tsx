@@ -36,7 +36,8 @@ import {
 import {
   evaluateQuest,
   getDailyQuests,
-  todayScheduleEntry,
+  effectiveTodaySchedule,
+  type DailyScheduleEntry,
   type QuestEvalSnapshot,
   type ScheduleDay,
   type WorkoutGoalChoice,
@@ -99,6 +100,7 @@ export default async function DashboardPage() {
     earnedBadgesRes,
     todayQuestRes,
     scheduleRes,
+    dailyScheduleTodayRes,
   ] = await Promise.all([
     admin.from("strength_standards").select("*"),
     admin
@@ -165,6 +167,13 @@ export default async function DashboardPage() {
       .from("workout_schedule")
       .select("day_of_week, is_rest, workout_type")
       .eq("user_id", user.id),
+    // Per-date override for today, if any. Wins over the template above.
+    admin
+      .from("daily_schedule")
+      .select("date, is_rest, workout_type")
+      .eq("user_id", user.id)
+      .eq("date", todayISO)
+      .maybeSingle(),
   ]);
 
   // If the nutrition_goals query failed because `mode` doesn't exist
@@ -194,7 +203,8 @@ export default async function DashboardPage() {
   const standards: StandardRow[] = selectStandards(
     (allStandards ?? []) as StandardRow[],
     profile.ageGroup,
-    profile.sex ?? "male"
+    profile.sex ?? "male",
+    profile.bodyweight ?? null
   );
 
   const sets: SetRow[] = (setsRows ?? []).map((r: any) => ({
@@ -345,6 +355,19 @@ export default async function DashboardPage() {
     .sort((a, b) => (a.date < b.date ? 1 : -1))
     .slice(0, 3);
 
+  // Sets logged today (drives the "Today's Workout" card on the
+  // dashboard's right rail). Newest first, capped to a few entries —
+  // the card itself shows the top 3.
+  const todaysSets = (setsRows ?? [])
+    .filter((r: any) => String(r.workouts?.date ?? "") === todayISO)
+    .map((r: any) => ({
+      exercise: String(r.exercise_name ?? ""),
+      muscleGroup: String(r.muscle_group ?? ""),
+      weight: Number(r.weight_lbs ?? 0),
+      reps: Number(r.reps ?? 0),
+      sets: Number(r.sets ?? 0),
+    }));
+
   // ── SCORING — three pillars + overall ─────────────────────────
   const decayMap = daysSinceLastTrainedByZone(
     (setsRows ?? []).map((r: any) => ({
@@ -411,7 +434,25 @@ export default async function DashboardPage() {
     })
   );
   const todayDow = new Date(todayISO + "T12:00:00Z").getUTCDay();
-  const todaySchedule = todayScheduleEntry(scheduleRows, todayDow);
+  // Per-date override (daily_schedule). Degrade silently if the table
+  // doesn't exist yet — the template fallback below still works.
+  const dailyToday: DailyScheduleEntry[] = (() => {
+    const row = (dailyScheduleTodayRes as any)?.data;
+    if (!row) return [];
+    return [
+      {
+        date: String(row.date ?? todayISO),
+        is_rest: !!row.is_rest,
+        workout_type: row.workout_type ?? null,
+      },
+    ];
+  })();
+  const todaySchedule = effectiveTodaySchedule(
+    dailyToday,
+    scheduleRows,
+    todayISO,
+    todayDow
+  );
   // Journey quest is gated by the BASE goal (10k), not the user's
   // harder personal goal — per spec: "Auto checks today's steps vs
   // base goal (10,000) · Shows: X,XXX / 10,000 steps".
@@ -722,6 +763,7 @@ export default async function DashboardPage() {
       stepsOverview={stepsOverview}
       nutritionOverview={nutritionOverview}
       recentActivity={recentActivity}
+      todaysSets={todaysSets}
       scores={scores}
       zoneDecay={zoneDecayFlat}
       dailyQuests={{
